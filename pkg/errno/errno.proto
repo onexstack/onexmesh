@@ -1,0 +1,28 @@
+// Copyright 2026 Lingfei Kong <colin404@foxmail.com>. All rights reserved.
+// Use of this source code is governed by a MIT style
+// license that can be found in the LICENSE file.
+
+// The onexmesh errno extensions let a proto enum double as a semantic error
+// catalog: an enum value carries an HTTP status code, and the protoc-gen-errno
+// plugin turns each value into an errorsx constructor + Reason constant.
+//
+// Extension field numbers live in the reserved custom-option range (>= 50000)
+// so they never collide with other well-known extensions.
+syntax = "proto3";
+
+package onexmesh.errno.v1;
+
+import "google/protobuf/descriptor.proto";
+
+option go_package = "github.com/onexstack/onexmesh/pkg/errno;errno";
+
+extend google.protobuf.EnumOptions {
+  // default_code is the HTTP status code applied to every enum value that does
+  // not set its own code.
+  int32 default_code = 51234;
+}
+
+extend google.protobuf.EnumValueOptions {
+  // code is the HTTP status code for a single enum value.
+  int32 code = 51235;
+}

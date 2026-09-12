@@ -1,0 +1,16 @@
+# Compiled binaries
+cmd/onexmeshctl/onexmeshctl
+examples/helloworld/server/server
+examples/helloworld/client/client
+bin/
+protoc-gen-errno
+
+# Test and coverage artifacts
+*.test
+coverage.out
+*.prof
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/

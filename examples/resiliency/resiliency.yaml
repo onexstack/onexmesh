@@ -1,0 +1,42 @@
+# 声明式韧性策略示例（dapr resiliency policy 风格）
+#
+# 通过 --resilience.policy-path 指向本文件即可为 edu.course.student-api 的
+# 各 endpoint 声明超时、重试与熔断策略，无需改代码、重新发版。
+#
+# 规则：
+#   - policies.* 定义命名模板
+#   - targets.apps.<service>.<endpoint> 按名引用模板（endpoint 为 gRPC 方法，
+#     形如 "/edu.course.student-api.StudentService/Get"）
+#   - retries[].matching.httpStatusCodes / gRPCStatusCodes 声明哪些状态码可重试
+name: student-api-resiliency
+spec:
+  policies:
+    timeouts:
+      fast: 200ms
+      slow: 2s
+    retries:
+      retryOnFailure:
+        policy: exponential
+        duration: 100ms
+        maxInterval: 1s
+        maxRetries: 3
+        matching:
+          gRPCStatusCodes: "14,8"   # Unavailable, ResourceExhausted
+      retryOn500:
+        policy: constant
+        duration: 200ms
+        maxRetries: 2
+        matching:
+          httpStatusCodes: "500,502-504"
+    circuitBreakers:
+      defaultCB:
+        maxRequests: 1
+        interval: 60s
+        timeout: 30s
+  targets:
+    apps:
+      edu.course.student-api:
+        timeout: fast
+        retry: retryOnFailure
+        circuitBreaker: defaultCB
+        circuitBreakerCacheSize: 100
