@@ -24,16 +24,12 @@ import (
 
 // httpOptions holds the options for an HTTP service-discovery client.
 type httpOptions struct {
-	registryName string
-	registryOpts any
-	discovery    registry.Discovery
-	selector     selector.Selector
-	timeout      time.Duration
-	httpClient   *http.Client
-	codec        codec.Marshaler
-	resilience   resilienceConfig
-	cacheTTL     time.Duration
-	cacheOpts    []cache.Option
+	discoveryConfig
+
+	selector   selector.Selector
+	timeout    time.Duration
+	httpClient *http.Client
+	codec      codec.Marshaler
 }
 
 // HTTPOption configures an HTTPClient.
@@ -41,16 +37,13 @@ type HTTPOption func(*httpOptions)
 
 // WithHTTPRegistry selects the registry backend and its options.
 func WithHTTPRegistry(name string, opts any) HTTPOption {
-	return func(o *httpOptions) {
-		o.registryName = name
-		o.registryOpts = opts
-	}
+	return func(o *httpOptions) { o.setRegistry(name, opts) }
 }
 
 // WithHTTPDiscovery injects a pre-built registry.Discovery, taking precedence
 // over WithHTTPRegistry, mirroring WithDiscovery for the gRPC client.
 func WithHTTPDiscovery(d registry.Discovery) HTTPOption {
-	return func(o *httpOptions) { o.discovery = d }
+	return func(o *httpOptions) { o.setDiscovery(d) }
 }
 
 // WithHTTPSelector overrides the default round-robin selector.
@@ -75,32 +68,25 @@ func WithHTTPCodec(c codec.Marshaler) HTTPOption {
 
 // WithHTTPRetry enables retry with exponential backoff and jitter.
 func WithHTTPRetry(maxAttempts int, base, max time.Duration) HTTPOption {
-	return func(o *httpOptions) {
-		o.resilience.maxAttempts = maxAttempts
-		o.resilience.baseBackoff = base
-		o.resilience.maxBackoff = max
-	}
+	return func(o *httpOptions) { o.setRetry(maxAttempts, base, max) }
 }
 
 // WithHTTPRetryable sets the predicate deciding which errors are retried.
 func WithHTTPRetryable(f func(error) bool) HTTPOption {
-	return func(o *httpOptions) { o.resilience.retryable = f }
+	return func(o *httpOptions) { o.setRetryable(f) }
 }
 
 // WithHTTPBreaker enables a Google SRE sliding-window circuit breaker around
 // HTTP calls.
 func WithHTTPBreaker(window, probeInterval time.Duration) HTTPOption {
-	return func(o *httpOptions) {
-		o.resilience.breakerWindow = window
-		o.resilience.breakerProbe = probeInterval
-	}
+	return func(o *httpOptions) { o.setBreaker(window, probeInterval) }
 }
 
 // WithHTTPBulkhead isolates the downstream service by bounding the number of
 // concurrent in-flight HTTP requests, mirroring WithBulkhead for the gRPC client.
 // A value <= 0 disables the bulkhead.
 func WithHTTPBulkhead(maxConcurrent int) HTTPOption {
-	return func(o *httpOptions) { o.resilience.maxConcurrent = maxConcurrent }
+	return func(o *httpOptions) { o.setBulkhead(maxConcurrent) }
 }
 
 // WithHTTPDiscoveryCache wraps the discovery backend in a read-through cache
@@ -108,10 +94,7 @@ func WithHTTPBulkhead(maxConcurrent int) HTTPOption {
 // It enables singleflight deduplication and stale-while-error degradation. When
 // ttl <= 0 the cache is disabled.
 func WithHTTPDiscoveryCache(ttl time.Duration, opts ...cache.Option) HTTPOption {
-	return func(o *httpOptions) {
-		o.cacheTTL = ttl
-		o.cacheOpts = opts
-	}
+	return func(o *httpOptions) { o.setDiscoveryCache(ttl, opts...) }
 }
 
 // HTTPClient performs HTTP calls against a service resolved via the registry.

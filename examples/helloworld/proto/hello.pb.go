@@ -7,6 +7,7 @@
 package helloworld
 
 import (
+	_ "github.com/onexstack/onexmesh/pkg/proto/onexmesh/v1"
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 	reflect "reflect"
@@ -114,14 +115,16 @@ var File_examples_helloworld_proto_hello_proto protoreflect.FileDescriptor
 const file_examples_helloworld_proto_hello_proto_rawDesc = "" +
 	"\n" +
 	"%examples/helloworld/proto/hello.proto\x12\n" +
-	"helloworld\"\"\n" +
+	"helloworld\x1a\x16onexmesh/v1/http.proto\"\"\n" +
 	"\fHelloRequest\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\"&\n" +
 	"\n" +
 	"HelloReply\x12\x18\n" +
-	"\amessage\x18\x01 \x01(\tR\amessage2G\n" +
-	"\aGreeter\x12<\n" +
-	"\bSayHello\x12\x18.helloworld.HelloRequest\x1a\x16.helloworld.HelloReplyBDZBgithub.com/onexstack/onexmesh/examples/helloworld/proto;helloworldb\x06proto3"
+	"\amessage\x18\x01 \x01(\tR\amessage2\xb9\x01\n" +
+	"\aGreeter\x12V\n" +
+	"\bSayHello\x12\x18.helloworld.HelloRequest\x1a\x16.helloworld.HelloReply\"\x18\xa2\x82\x19\x14\n" +
+	"\x12/helloworld/{name}\x12V\n" +
+	"\fSayHelloPost\x12\x18.helloworld.HelloRequest\x1a\x16.helloworld.HelloReply\"\x14\xa2\x82\x19\x10\x1a\v/helloworld:\x01*BDZBgithub.com/onexstack/onexmesh/examples/helloworld/proto;helloworldb\x06proto3"
 
 var (
 	file_examples_helloworld_proto_hello_proto_rawDescOnce sync.Once
@@ -142,9 +145,11 @@ var file_examples_helloworld_proto_hello_proto_goTypes = []any{
 }
 var file_examples_helloworld_proto_hello_proto_depIdxs = []int32{
 	0, // 0: helloworld.Greeter.SayHello:input_type -> helloworld.HelloRequest
-	1, // 1: helloworld.Greeter.SayHello:output_type -> helloworld.HelloReply
-	1, // [1:2] is the sub-list for method output_type
-	0, // [0:1] is the sub-list for method input_type
+	0, // 1: helloworld.Greeter.SayHelloPost:input_type -> helloworld.HelloRequest
+	1, // 2: helloworld.Greeter.SayHello:output_type -> helloworld.HelloReply
+	1, // 3: helloworld.Greeter.SayHelloPost:output_type -> helloworld.HelloReply
+	2, // [2:4] is the sub-list for method output_type
+	0, // [0:2] is the sub-list for method input_type
 	0, // [0:0] is the sub-list for extension type_name
 	0, // [0:0] is the sub-list for extension extendee
 	0, // [0:0] is the sub-list for field type_name

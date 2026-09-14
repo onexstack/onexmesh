@@ -4,9 +4,16 @@ package helloworld;
 
 option go_package = "github.com/onexstack/onexmesh/examples/helloworld/proto;helloworld";
 
+import "onexmesh/v1/http.proto";
+
 // Greeter is a minimal demonstration service.
 service Greeter {
-  rpc SayHello(HelloRequest) returns (HelloReply);
+  rpc SayHello(HelloRequest) returns (HelloReply) {
+    option (onexmesh.v1.http) = { get: "/helloworld/{name}" };
+  }
+  rpc SayHelloPost(HelloRequest) returns (HelloReply) {
+    option (onexmesh.v1.http) = { post: "/helloworld", body: "*" };
+  }
 }
 
 message HelloRequest {

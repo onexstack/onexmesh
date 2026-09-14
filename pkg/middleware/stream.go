@@ -21,6 +21,10 @@ import (
 func StreamServerInterceptor(m Middleware) grpc.StreamServerInterceptor {
 	return func(srv interface{}, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
 		md, _ := metadata.FromIncomingContext(ss.Context())
+		// Unlike UnaryServerInterceptor, the reply header is not flushed back to
+		// gRPC here: stream response headers must be sent before the first
+		// message, which conflicts with the post-handler write timing of the
+		// unified middleware chain.
 		tr := transport.NewTransporter(
 			transport.KindGRPC,
 			info.FullMethod,

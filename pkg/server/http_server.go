@@ -23,7 +23,6 @@ type HTTPServer struct {
 	instance  *registry.ServiceInstance
 
 	server *http.Server
-	lis    net.Listener
 }
 
 // HTTPOption configures an HTTPServer.
@@ -47,20 +46,16 @@ func NewHTTPServer(addr string, handler http.Handler, opts ...HTTPOption) *HTTPS
 	return s
 }
 
+// httpServable adapts *http.Server to the shared servable contract.
+type httpServable struct{ *http.Server }
+
+func (h httpServable) Serve(lis net.Listener) error { return h.Server.Serve(lis) }
+func (h httpServable) Shutdown(ctx context.Context) error {
+	return h.Server.Shutdown(ctx)
+}
+func (h httpServable) isClosedError(err error) bool { return errors.Is(err, http.ErrServerClosed) }
+
 func (s *HTTPServer) Start(ctx context.Context) error {
-	lis, err := net.Listen("tcp", s.addr)
-	if err != nil {
-		return err
-	}
-	s.lis = lis
-
-	if s.registrar != nil && s.instance != nil {
-		if err := s.registrar.Register(ctx, s.instance); err != nil {
-			_ = lis.Close()
-			return err
-		}
-	}
-
 	s.server = &http.Server{
 		Handler:           s.handler,
 		ReadHeaderTimeout: 5 * time.Second,
@@ -68,31 +63,7 @@ func (s *HTTPServer) Start(ctx context.Context) error {
 		WriteTimeout:      30 * time.Second,
 		IdleTimeout:       90 * time.Second,
 	}
-
-	slog.Info("starting http server", "addr", s.addr)
-
-	// Serve in a goroutine so Start can respond to context cancellation and
-	// sibling failure (see GRPCServer.Start for the errgroup rationale).
-	errCh := make(chan error, 1)
-	go func() {
-		errCh <- s.server.Serve(lis)
-	}()
-
-	select {
-	case err := <-errCh:
-		if err != nil && !errors.Is(err, http.ErrServerClosed) {
-			return err
-		}
-		return nil
-	case <-ctx.Done():
-		slog.Info("http server context canceled, shutting down", "addr", s.addr)
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), defaultShutdownTimeout)
-		defer cancel()
-		if err := s.server.Shutdown(shutdownCtx); err != nil {
-			slog.Error("http server shutdown failed", "error", err)
-		}
-		return nil
-	}
+	return serve(ctx, httpServable{s.server}, s.registrar, s.instance, s.addr, "http")
 }
 
 func (s *HTTPServer) Stop(ctx context.Context) error {

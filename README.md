@@ -5,6 +5,10 @@ OneXMesh 是一个高性能、可扩展的 Go 微服务框架，统一了 gRPC �
 ## 特性
 
 - **统一传输抽象**：`transport.Transporter` 抹平 HTTP header 与 gRPC metadata，一套中间件同时服务两种协议。
+- **统一业务处理器**：`middleware.Handler`（签名与 `grpc.UnaryHandler` 一致）作为唯一业务契约，经 `HTTPHandler`/`GinHandler`/`UnaryServerInterceptor`/`StreamServerInterceptor` 桥，一份业务函数即可同时服务 gRPC 与 HTTP。
+- **协议无关服务声明**：`server.NewMethod[Req, Resp]` 泛型擦除强类型业务函数，`server.Service` 一份声明同时驱动 gRPC（运行时反射注册，无需 `RegisterXxxServer`）与 HTTP 路由。
+- **protobuf IDL 驱动的 HTTP 路由**：方法级 `onexmesh.v1.http` 注解 + `protoc-gen-onexmesh` 插件生成 HTTP 路由（path/query/body 解码），与 gRPC 共用同一业务实现（grpc-gateway 风格）。
+- **HTTP 路由插件化注册**：`server.HTTPRoute` 自描述接口 + `RegisterHTTPRoute` 注册表，业务包 `init()` 自注册，组合根 `app.RunMeshRegistered` 零配置发现装配（与 registry/middleware/codec/selector 注册表同构）。
 - **双协议**：gRPC（grpc + protobuf）与 HTTP（gin + JSON / gin + Protobuf）。
 - **可插拔注册中心**：工厂注册表 + `Registrar`/`Discovery` 分离，内置 Polaris、Etcd、Kubernetes、Consul、Nacos、Eureka。
 - **服务发现缓存层**：`registry/cache` 为 `Discovery` 提供 singleflight 去重、服务/节点双 TTL、故障降级（stale-while-error）与刷新限流。
@@ -29,7 +33,7 @@ pkg/
 ├── registry/      # 注册发现抽象 + polaris/etcd/kubernetes/consul/nacos/eureka 实现 + cache 缓存层
 ├── selector/      # 负载均衡（round_robin/random/weighted/p2c）
 ├── config/        # 配置四层抽象 + file/polaris source + 注册表
-├── server/        # 生命周期（Server/ServiceGroup + http/grpc）
+├── server/        # 生命周期（Server/ServiceGroup + http/grpc）+ Service/Method 声明 + HTTPRoute 插件注册表
 ├── client/        # 服务发现客户端（Dial + onexmesh resolver + HTTP 实例缓存）
 ├── resilience/    # 韧性（breaker/shedder/retry/hedge/timeout）
 ├── ratelimit/     # 限流（本地 + 分布式 Store：memory/redis，含兜底）
@@ -45,8 +49,10 @@ pkg/
 
 ### 服务端（gRPC + HTTP 双协议，注册到 Etcd）
 
-**组合根（推荐）**：`app.RunMesh` 作为唯一装配点，把 `ServerOptions` 配置转为运行中的服务，
-自动完成 registrar 创建、中间件装配、启动与优雅关停：
+**组合根（推荐）**：`app.RunMeshWithServices` 作为唯一装配点，从一份 `server.Service` 声明
+同时驱动 gRPC 注册与 HTTP 路由，自动完成 registrar 创建、中间件装配、启动与优雅关停。
+业务逻辑经 `NewMethod` 泛型擦除后**只写一份强类型函数**，框架层用 gRPC 反射注册 + HTTP 路由
+生成同时服务两种协议：
 
 ```go
 opts := options.NewServerOptions()
@@ -56,18 +62,65 @@ opts.Mesh.GRPCAddr = "127.0.0.1:9090"
 opts.Mesh.HTTPAddr = "127.0.0.1:8080"
 opts.Registry.Type = "etcd"
 
-engine := gin.New()
-engine.GET("/hello", func(c *gin.Context) { c.String(http.StatusOK, "Hello %s", c.Query("name")) })
+// 业务逻辑只写一份：一个强类型函数，由 NewMethod 泛型擦除为统一 Handler，
+// 同时服务 gRPC SayHello 与 HTTP POST /hello（无需再写 greeterServer / RegisterXxxServer）。
+svc := server.NewService("helloworld.Greeter",
+    server.NewMethod("SayHello", "/hello",
+        func() any { return &proto.HelloRequest{} },
+        func(_ context.Context, r *proto.HelloRequest) (*proto.HelloReply, error) {
+            return &proto.HelloReply{Message: "Hello " + r.GetName()}, nil
+        },
+    ),
+)
 
 a := app.NewApp("helloworld-server", "Helloworld gRPC + HTTP server.",
     app.WithOptions(opts),
-    app.WithRun(app.RunMesh(opts,
-        func(s grpc.ServiceRegistrar) { proto.RegisterGreeterServer(s, &greeterServer{}) },
-        engine,
-    )),
+    app.WithRun(app.RunMeshWithServices(opts, svc)),
 )
 a.Run()
 ```
+
+### protobuf IDL 驱动的 HTTP 路由（grpc-gateway 风格）
+
+请求参数统一用 protobuf IDL 定义，HTTP 路由由方法级 `onexmesh.v1.http` 注解指定，
+经 `protoc-gen-onexmesh` 插件生成，与 gRPC 共用同一份业务实现：
+
+```proto
+// hello.proto
+import "onexmesh/v1/http.proto";
+
+service Greeter {
+  rpc SayHello(HelloRequest) returns (HelloReply) {
+    option (onexmesh.v1.http) = { get: "/helloworld/{name}" };   // path 参数
+  }
+  rpc SayHelloPost(HelloRequest) returns (HelloReply) {
+    option (onexmesh.v1.http) = { post: "/helloworld", body: "*" };  // body 参数
+  }
+}
+```
+
+```go
+// 一个 struct 同时实现 gRPC 接口与生成的 HTTP 路由。
+type greeterService struct{ proto.UnimplementedGreeterServer }
+func (s *greeterService) SayHello(ctx context.Context, req *proto.HelloRequest) (*proto.HelloReply, error) {
+    return &proto.HelloReply{Message: "Hello " + req.GetName()}, nil
+}
+func (s *greeterService) SayHelloPost(ctx context.Context, req *proto.HelloRequest) (*proto.HelloReply, error) { ... }
+
+// 一行装配：NewGreeterService 把 gRPC + HTTP 注册打包成一个 server.Service。
+srv := &greeterService{}
+svc := proto.NewGreeterService(srv)
+app.RunMeshWithServices(opts, svc)
+```
+
+生成命令：`make proto`（会 `go install` 两个插件并重新生成）。
+`protoc-gen-onexmesh` 会额外生成 `New<Service>Service(srv)` 工厂，把 `Register<Service>Server`
+（gRPC）与 `Register<Service>HTTPServer`（HTTP）两个固定样板收进生成代码，业务方无需写
+`grpc.ServiceRegistrar` / `*gin.Engine` 闭包。
+
+> 完整示例见 `examples/helloworld/`（含自定义中间件 `requestID`、HTTP 路由插件化 `healthz`、
+> 手写 path/query 扩展 `/users/:id` 与 `/search`）。`opts.Mesh.Protocol = grpc|http|both` 按需开启。
+> gRPC streaming 经 `Service.Register` 扩展点接入。
 
 **底层 API（进阶）**：直接使用 `server`/`registry` 抽象手工装配，适合需要精细控制的场景：
 
@@ -92,6 +145,30 @@ group.Add("grpc", grpcSrv)
 group.Add("http", httpSrv)
 _ = group.Start(ctx)
 ```
+
+### HTTP 路由插件化注册
+
+独立于 `server.Service` 的 HTTP-only 路由模块可通过 `server.RegisterHTTPRoute` 在 `init()`
+自注册，组合根 `app.RunMeshRegistered` 自动发现装配，新增路由模块无需改组合根：
+
+```go
+// 业务包内（可独立成包）：init 自注册，无需组合根显式 import。
+func init() {
+    server.RegisterHTTPRoute("healthz", server.NewRoute("healthz", func(e *gin.Engine) {
+        e.GET("/healthz", func(c *gin.Context) { c.String(http.StatusOK, "ok") })
+    }))
+}
+
+// 组合根：自动发现所有已注册 HTTPRoute 插件（可同时传入显式 server.Service）。
+a := app.NewApp("server", "my service",
+    app.WithOptions(opts),
+    app.WithRun(app.RunMeshRegistered(opts)),
+)
+a.Run()
+```
+
+该模式与 `registry.RegisterBackend` / `middleware.Register` / `codec.Register` /
+`selector.RegisterSelector` 同构（注册表 + `init()` 自注册 + 按名发现，符合开放/封闭原则）。
 
 ### 客户端（按服务名发现）
 

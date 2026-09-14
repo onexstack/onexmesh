@@ -9,7 +9,6 @@ import (
 	"errors"
 	"log/slog"
 	"net"
-	"time"
 
 	"google.golang.org/grpc"
 
@@ -23,8 +22,6 @@ type GRPCServer struct {
 	register  func(grpc.ServiceRegistrar)
 	registrar registry.Registrar
 	instance  *registry.ServiceInstance
-
-	lis net.Listener
 }
 
 // GRPCOption configures a GRPCServer.
@@ -56,57 +53,34 @@ func (s *GRPCServer) WithRegistrar(r registry.Registrar, inst *registry.ServiceI
 	return s
 }
 
+// grpcServable adapts *grpc.Server to the shared servable contract.
+type grpcServable struct{ *grpc.Server }
+
+func (g grpcServable) Serve(lis net.Listener) error { return g.Server.Serve(lis) }
+
+func (g grpcServable) Shutdown(ctx context.Context) error {
+	done := make(chan struct{})
+	go func() {
+		g.Server.GracefulStop()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		g.Server.Stop()
+		<-done
+		return ctx.Err()
+	}
+}
+
+func (g grpcServable) isClosedError(err error) bool { return errors.Is(err, grpc.ErrServerStopped) }
+
 func (s *GRPCServer) Start(ctx context.Context) error {
 	if s.register != nil {
 		s.register(s.server)
 	}
-
-	lis, err := net.Listen("tcp", s.addr)
-	if err != nil {
-		return err
-	}
-	s.lis = lis
-
-	if s.registrar != nil && s.instance != nil {
-		if err := s.registrar.Register(ctx, s.instance); err != nil {
-			_ = lis.Close()
-			return err
-		}
-	}
-
-	slog.Info("starting grpc server", "addr", s.addr)
-
-	// Serve in a goroutine so Start can respond to context cancellation and
-	// sibling failure. ServiceGroup drives Start via errgroup.WithContext: when
-	// one server fails and cancels ctx, every sibling must return instead of
-	// blocking forever in Serve.
-	errCh := make(chan error, 1)
-	go func() {
-		errCh <- s.server.Serve(lis)
-	}()
-
-	select {
-	case err := <-errCh:
-		if err != nil && !errors.Is(err, grpc.ErrServerStopped) {
-			return err
-		}
-		return nil
-	case <-ctx.Done():
-		slog.Info("grpc server context canceled, shutting down", "addr", s.addr)
-		done := make(chan struct{})
-		go func() {
-			s.server.GracefulStop()
-			close(done)
-		}()
-		select {
-		case <-done:
-		case <-time.After(defaultShutdownTimeout):
-			slog.Warn("grpc server graceful stop timed out, forcing stop", "addr", s.addr)
-			s.server.Stop()
-			<-done
-		}
-		return nil
-	}
+	return serve(ctx, grpcServable{s.server}, s.registrar, s.instance, s.addr, "grpc")
 }
 
 func (s *GRPCServer) Stop(ctx context.Context) error {

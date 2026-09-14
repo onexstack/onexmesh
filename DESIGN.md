@@ -45,7 +45,7 @@ pkg/
 | 抽象工厂 + 注册表 | `registry.RegisterRegistrar/RegisterDiscovery` + `CreateXxx`；`selector.RegisterSelector/GetSelector`；`middleware.Register/Get`；`codec.Register/Get`；`config` 与 `ratelimit.Store` 同构 |
 | 函数式 Option | `client.Dial(...WithXxx)`、`server.NewGRPCServer(...opts)`、`NewApp(...)` |
 | 策略 | selector 负载均衡（round_robin/random/weighted/p2c）；codec（json/protobuf）；限流（令牌桶/漏桶/并发） |
-| 适配器 | `transport.Transporter/Header` 抹平 gin/grpc；`client/balancer` 适配 selector→grpc；`middleware.GinHandler/UnaryServerInterceptor/StreamServerInterceptor` 桥 |
+| 适配器 | `transport.Transporter/Header` 抹平 gin/grpc；`client/balancer` 适配 selector→grpc；`middleware.GinHandler/UnaryServerInterceptor/StreamServerInterceptor/HTTPHandler` 桥 |
 | 责任链 | middleware `Chain`；grpc `WithChainUnaryInterceptor`；resilience 链（`Chain` 统一收敛到 `core/chain` 泛型实现） |
 | 装饰器 | middleware 包装 handler；`TraceIDHandler` 装饰 slog.Handler；`registry/cache` 装饰 `Discovery` |
 | 观察者 | registry `Watcher.Next()`；config `Watch` 热更新 |
@@ -100,8 +100,12 @@ stale-while-error 降级 + 刷新限流）。HTTP 客户端 `NewHTTPClient` 提�
 ### 3.3 中间件（middleware）
 
 统一 `Handler func(ctx, req) (resp, error)` + `Middleware func(Handler) Handler`，
-`UnaryServerInterceptor`/`UnaryClientInterceptor`/`StreamServerInterceptor`/`GinHandler` 四个桥
-适配 gRPC（unary + streaming）与 gin。
+`UnaryServerInterceptor`/`UnaryClientInterceptor`/`StreamServerInterceptor`/`GinHandler`/`HTTPHandler`
+五个桥适配 gRPC（unary + streaming）与 gin。其中 `HTTPHandler` 是业务层桥：它把一份 `Handler`
+适配成 `gin.HandlerFunc`（`codec.Bind` 解码 body、`codec.Render` 编码响应、`codec.RenderError`
+写错误包络），使一个业务函数同时服务 gRPC 方法与 HTTP 路由（见 `examples/helloworld`）。
+unary 桥在 handler 返回后把 `ReplyHeader` 回写 `grpc.SetHeader`；streaming 桥由 `RunMesh` 经
+`ChainStreamInterceptor` 接入。
 
 内置中间件：`Recovery`、`Logging`、`Tracing`、`Metrics`（in-flight gauge + 错误分类计数）、
 `Timeout`、`Auth`（JWT，复用 onexstack `pkg/token`）、`CORS`、`BodyLimit`、`RateLimit`。
@@ -163,6 +167,38 @@ a.Run()
 上下文取消时优雅停服并 deregister。`options` 层的 `ServiceInstance/BuildMiddleware/BuildMatcher/
 BuildClientDialOptions` 把「配置对象 → 运行时对象」转换集中在一处，保持无副作用、可测试。
 
+`RunMeshWithServices` 是推荐的组合根：业务方用 `server.NewMethod[Req, Resp]` 泛型把一份强类型
+函数擦除为统一 `middleware.Handler`，框架层用 gRPC 反射注册（`Service.RegisterGRPC` 运行时构造
+`grpc.ServiceDesc`，无需生成的 `RegisterXxxServer`）与 HTTP 路由生成同时服务两种协议，再委托给
+`RunMesh`。协议特有场景走扩展点：gRPC streaming 经 `Service.Register`、IDL 生成的 HTTP 路由经
+`Service.RegisterHTTP`；纯 HTTP 端点（无 proto 定义）经 `server.RegisterHTTPRoute` 插件化。
+
+### 3.7 protobuf IDL 驱动的 HTTP 路由（grpc-gateway 风格）
+
+请求参数统一用 protobuf IDL 定义，HTTP 路由由方法级 `onexmesh.v1.http` 注解指定
+（`pkg/proto/onexmesh/v1/http.proto` 的自包含 `HttpRule`，替代 `google.api.http`），
+`cmd/protoc-gen-onexmesh` 插件读取注解并生成 `*_http.pb.go`：
+
+- 生成 `Register<Service>HTTPServer(e *gin.Engine, srv <Service>Server)`，复用 gRPC 的
+  `<Service>Server` 接口（单一接口、单一 struct 双协议）。
+- 额外生成 `New<Service>Service(srv <Service>Server) server.Service` 工厂，把 gRPC 注册
+  （`Register<Service>Server`）与 HTTP 注册（`Register<Service>HTTPServer`）两个固定样板收进
+  生成代码，业务方一行 `proto.NewGreeterService(srv)` 完成装配，无需写 `grpc.ServiceRegistrar` /
+  `*gin.Engine` 闭包。
+- 每个 handler 依序 `codec.BindPath`（`{field}` path 参数）→ `codec.BindQuery`（query 参数）→
+  `codec.Bind`（`body:"*"` 整 message），再调用同一业务方法、`codec.Render` 编码响应。
+- `codec.BindPath/BindQuery` 用 protoreflect + strconv 做 string→标量/enum/repeated/嵌套 回填
+  （对齐 grpc-gateway `runtime/query.go` 的子集，kratos 式可插拔解码）。
+
+对应 grpc-gateway 的 `local_request_Xxx` 直调：HTTP 路由解码后直接调用 gRPC 服务实现的同一方法，
+不做 client 转发。`opts.Mesh.Protocol = grpc|http|both` 控制按需开启。字段级 `body:"field"` 与
+多 segment path `{name=messages/*}` 留作后续扩展。
+
+`RunMeshRegistered` 是插件化入口：业务包在 `init()` 里 `server.RegisterHTTPRoute` 自注册
+HTTP-only 路由模块（`server.HTTPRoute` 自描述接口），组合根自动发现装配，无需显式 import/汇总。
+`RunMeshWithRoutes(opts, routes...)` 则按显式 `[]HTTPRoute` 装配纯 HTTP 服务。三者都委托 `RunMesh`，
+共享中间件链、注册与生命周期。
+
 ## 4. 扩展指南
 
 ### 4.1 新增一个注册中心后端
@@ -197,7 +233,8 @@ BuildClientDialOptions` 把「配置对象 → 运行时对象」转换集中在
 
 实现 `middleware.Middleware`（`func(Handler) Handler`），用 `middleware.Chain` 组合，
 经 `middleware.GinHandler`/`UnaryServerInterceptor`/`StreamServerInterceptor` 桥接入
-gin/grpc（含 streaming）。可选地 `middleware.Register(name, factory)` 注册到名字表，
+gin/grpc（含 streaming）。业务函数则经 `middleware.HTTPHandler` 桥实现「一份逻辑双协议」。
+可选地 `middleware.Register(name, factory)` 注册到名字表，
 供路由级配置按名引用。参考：`pkg/middleware/` 下的 `auth.go`（JWT）、`cors.go`、
 `bodylimit.go`（`http.MaxBytesReader` 防 OOM）、`ratelimit.go`（`ratelimit.Limiter`）。
 

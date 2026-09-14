@@ -1,0 +1,42 @@
+// Copyright 2026 Lingfei Kong <colin404@foxmail.com>. All rights reserved.
+// Use of this source code is governed by a MIT style
+// license that can be found in the LICENSE file.
+
+// The onexmesh.v1 HTTP extensions let a protobuf service method declare its HTTP
+// REST route. The protoc-gen-onexmesh plugin turns each annotated method into a
+// generated HTTP route that decodes path/query/body into the request message and
+// calls the SAME service implementation used by gRPC, mirroring grpc-gateway's
+// google.api.http annotation with a self-contained message.
+//
+// Extension field numbers live in the reserved custom-option range (>= 50000).
+syntax = "proto3";
+
+package onexmesh.v1;
+
+import "google/protobuf/descriptor.proto";
+
+option go_package = "github.com/onexstack/onexmesh/pkg/proto/onexmesh/v1;onexmeshv1";
+
+// HttpRule maps a single RPC method to an HTTP REST endpoint. Exactly one of the
+// HTTP verb fields should be set; the path template uses {field} placeholders
+// that refer to request message fields, e.g. "/v1/{name}".
+message HttpRule {
+  // get maps the method to GET with the given path template.
+  string get = 1;
+  // put maps the method to PUT with the given path template.
+  string put = 2;
+  // post maps the method to POST with the given path template.
+  string post = 3;
+  // delete maps the method to DELETE with the given path template.
+  string delete = 4;
+  // patch maps the method to PATCH with the given path template.
+  string patch = 5;
+  // body names the request field used as the HTTP request body, or "*" for the
+  // whole request message. Empty means no request body.
+  string body = 7;
+}
+
+extend google.protobuf.MethodOptions {
+  // http is the HTTP mapping for a method.
+  HttpRule http = 51236;
+}

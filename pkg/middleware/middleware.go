@@ -44,16 +44,23 @@ func Chain(outer Middleware, others ...Middleware) Middleware {
 func UnaryServerInterceptor(m Middleware) grpc.UnaryServerInterceptor {
 	return func(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
 		md, _ := metadata.FromIncomingContext(ctx)
+		// replyMD is the same map the metadataHeader adapts, so middlewares that
+		// write to tr.ReplyHeader() mutate it and it is flushed back to gRPC below.
+		replyMD := metadata.MD{}
 		tr := transport.NewTransporter(
 			transport.KindGRPC,
 			info.FullMethod,
 			"",
 			transport.NewMetadataHeader(md),
-			transport.NewMetadataHeader(metadata.MD{}),
+			transport.NewMetadataHeader(replyMD),
 		)
 		defer transport.Release(tr)
 		ctx = transport.NewServerContext(ctx, tr)
-		return m(Handler(handler))(ctx, req)
+		resp, err := m(Handler(handler))(ctx, req)
+		if len(replyMD) > 0 {
+			grpc.SetHeader(ctx, replyMD)
+		}
+		return resp, err
 	}
 }
 

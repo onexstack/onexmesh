@@ -13,8 +13,8 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
-// Service couples a name with a Server for lifecycle management.
-type Service struct {
+// ServiceEntry couples a name with a Server for lifecycle management.
+type ServiceEntry struct {
 	Name   string
 	Server Server
 }
@@ -24,7 +24,7 @@ type Service struct {
 // the go-zero ServiceGroup convention.
 type ServiceGroup struct {
 	mu       sync.Mutex
-	services []Service
+	services []ServiceEntry
 }
 
 // NewServiceGroup creates an empty ServiceGroup.
@@ -36,14 +36,14 @@ func NewServiceGroup() *ServiceGroup {
 func (g *ServiceGroup) Add(name string, s Server) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	g.services = append(g.services, Service{Name: name, Server: s})
+	g.services = append(g.services, ServiceEntry{Name: name, Server: s})
 }
 
 // Start starts all servers concurrently and blocks until one fails or the
 // context is canceled.
 func (g *ServiceGroup) Start(ctx context.Context) error {
 	g.mu.Lock()
-	services := append([]Service(nil), g.services...)
+	services := append([]ServiceEntry(nil), g.services...)
 	g.mu.Unlock()
 
 	eg, ctx := errgroup.WithContext(ctx)
@@ -64,7 +64,7 @@ func (g *ServiceGroup) Start(ctx context.Context) error {
 // leak the remaining servers.
 func (g *ServiceGroup) Stop(ctx context.Context) error {
 	g.mu.Lock()
-	services := append([]Service(nil), g.services...)
+	services := append([]ServiceEntry(nil), g.services...)
 	g.mu.Unlock()
 
 	var errs []error

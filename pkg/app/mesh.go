@@ -36,21 +36,23 @@ const meshShutdownTimeout = 10 * time.Second
 // service, so generated SDKs and examples no longer wire dependencies by hand.
 func RunMesh(opts *options.ServerOptions, register func(grpc.ServiceRegistrar), engine *gin.Engine) RunFunc {
 	return func(ctx context.Context) error {
-		// Prefer route-aware middleware dispatch when route bindings are
-		// configured; otherwise fall back to the flat global chain.
-		var unaryInts []grpc.UnaryServerInterceptor
-		var ginMws []middleware.Middleware
+		// Resolve the middleware chain once — route-aware via the matcher when
+		// configured, otherwise the flat global chain — then adapt it to both the
+		// unary and stream gRPC bridges and the gin bridge from the same source.
+		var mws []middleware.Middleware
 		if m, err := opts.BuildMatcher(); err != nil {
 			return err
 		} else if m != nil {
-			unaryInts = append(unaryInts, middleware.UnaryServerInterceptor(matcher.Match(m)))
-			ginMws = append(ginMws, matcher.Match(m))
+			mws = []middleware.Middleware{matcher.Match(m)}
 		} else {
-			mws := opts.BuildMiddleware()
-			for _, mw := range mws {
-				unaryInts = append(unaryInts, middleware.UnaryServerInterceptor(mw))
-			}
-			ginMws = mws
+			mws = opts.BuildMiddleware()
+		}
+
+		var unaryInts []grpc.UnaryServerInterceptor
+		var streamInts []grpc.StreamServerInterceptor
+		for _, mw := range mws {
+			unaryInts = append(unaryInts, middleware.UnaryServerInterceptor(mw))
+			streamInts = append(streamInts, middleware.StreamServerInterceptor(mw))
 		}
 
 		group := server.NewServiceGroup()
@@ -60,7 +62,10 @@ func RunMesh(opts *options.ServerOptions, register func(grpc.ServiceRegistrar), 
 			if err != nil {
 				return err
 			}
-			grpcSrv := server.NewGRPCServer(opts.Mesh.GRPCAddr, register, grpc.ChainUnaryInterceptor(unaryInts...))
+			grpcSrv := server.NewGRPCServer(opts.Mesh.GRPCAddr, register,
+				grpc.ChainUnaryInterceptor(unaryInts...),
+				grpc.ChainStreamInterceptor(streamInts...),
+			)
 			if grpcReg != nil {
 				grpcSrv.WithRegistrar(grpcReg, opts.ServiceInstanceFor("grpc"))
 			}
@@ -68,7 +73,7 @@ func RunMesh(opts *options.ServerOptions, register func(grpc.ServiceRegistrar), 
 		}
 
 		if engine != nil && options.ProtocolUsesHTTP(opts.Mesh.Protocol) {
-			for _, m := range ginMws {
+			for _, m := range mws {
 				engine.Use(middleware.GinHandler(m))
 			}
 			httpReg, err := buildRegistrarFor(opts, "http", opts.Mesh.HTTPAddr)
@@ -131,10 +136,77 @@ type MeshServer struct {
 	run RunFunc
 }
 
+// RunMeshWithServices is the recommended composition root for dual-protocol
+// services. Each Service.Methods is auto-registered as gRPC unary methods (via
+// Service.RegisterGRPC) and as HTTP routes (via middleware.HTTPHandler), so a
+// single strongly-typed handler serves both protocols. Service.Register and
+// Service.RegisterHTTP are the symmetric extension points for gRPC streaming and
+// IDL-generated HTTP routes respectively. It delegates to RunMesh, so
+// middleware, registration and lifecycle behavior are identical.
+func RunMeshWithServices(opts *options.ServerOptions, services ...server.Service) RunFunc {
+	return RunMesh(opts, registerServices(services), buildEngine(services, nil))
+}
+
+// RunMeshWithRoutes assembles a pure HTTP service from explicit HTTPRoute
+// plugins (no gRPC methods). Each route registers itself onto the gin engine;
+// RunMesh wires the standard middleware chain, registration and lifecycle.
+func RunMeshWithRoutes(opts *options.ServerOptions, routes ...server.HTTPRoute) RunFunc {
+	return RunMesh(opts, nil, buildEngine(nil, routes))
+}
+
+// RunMeshRegistered auto-discovers every HTTPRoute registered via
+// server.RegisterHTTPRoute and assembles them alongside any explicit services.
+// Business packages self-register in init(), so the composition root needs no
+// explicit import of each route module.
+func RunMeshRegistered(opts *options.ServerOptions, services ...server.Service) RunFunc {
+	return RunMesh(opts, registerServices(services), buildEngine(services, server.AllHTTPRoutes()))
+}
+
+// registerServices returns a gRPC registration callback that registers each
+// service's Methods (reflection) and Register (streaming) extension, or nil when
+// there are no services (pure HTTP).
+func registerServices(services []server.Service) func(grpc.ServiceRegistrar) {
+	if len(services) == 0 {
+		return nil
+	}
+	return func(s grpc.ServiceRegistrar) {
+		for _, svc := range services {
+			svc.RegisterGRPC(s)
+			if svc.Register != nil {
+				svc.Register(s)
+			}
+		}
+	}
+}
+
+// buildEngine constructs the gin engine from the services' Methods/RegisterHTTP
+// and the HTTPRoute plugins.
+func buildEngine(services []server.Service, routes []server.HTTPRoute) *gin.Engine {
+	engine := gin.New()
+	for _, svc := range services {
+		for _, m := range svc.Methods {
+			engine.Handle(m.Method, m.Path, middleware.HTTPHandler(m.Handler, m.NewReq))
+		}
+		if svc.RegisterHTTP != nil {
+			svc.RegisterHTTP(engine)
+		}
+	}
+	for _, r := range routes {
+		r.RegisterRoutes(engine)
+	}
+	return engine
+}
+
 // NewMeshServer returns a MeshServer assembled from the given options, gRPC
 // service registration callback and optional gin engine.
 func NewMeshServer(opts *options.ServerOptions, register func(grpc.ServiceRegistrar), engine *gin.Engine) *MeshServer {
 	return &MeshServer{run: RunMesh(opts, register, engine)}
+}
+
+// NewMeshServerWithServices returns a MeshServer assembled from server.Service
+// declarations, mirroring RunMeshWithServices.
+func NewMeshServerWithServices(opts *options.ServerOptions, services ...server.Service) *MeshServer {
+	return &MeshServer{run: RunMeshWithServices(opts, services...)}
 }
 
 // Run assembles, registers and serves the mesh service until ctx is canceled or

@@ -6,16 +6,21 @@ package app_test
 
 import (
 	"context"
+	"io"
 	"net"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 
+	proto "github.com/onexstack/onexmesh/examples/helloworld/proto"
 	"github.com/onexstack/onexmesh/pkg/app"
 	"github.com/onexstack/onexmesh/pkg/options"
+	"github.com/onexstack/onexmesh/pkg/server"
 )
 
 // freeAddr reserves an ephemeral port and returns its address.
@@ -78,5 +83,297 @@ func TestRunMeshStartAndStop(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("RunMesh did not return after cancellation")
+	}
+}
+
+// TestRunMeshWithServices verifies that a server.Service declaration is wired to
+// both protocols: the NewMethod body method serves HTTP, and the RegisterHTTP
+// extension point registers HTTP-only routes.
+func TestRunMeshWithServices(t *testing.T) {
+	grpcAddr := freeAddr(t)
+	httpAddr := freeAddr(t)
+
+	type helloReq struct {
+		Name string `json:"name"`
+	}
+
+	opts := options.NewServerOptions()
+	opts.Mesh.ServiceName = "helloworld.Greeter"
+	opts.Mesh.Protocol = "both"
+	opts.Mesh.GRPCAddr = grpcAddr
+	opts.Mesh.HTTPAddr = httpAddr
+	opts.Registry.Type = "none"
+
+	svc := server.NewService("helloworld.Greeter",
+		server.NewMethod("SayHello", "/hello",
+			func() any { return &helloReq{} },
+			func(_ context.Context, r *helloReq) (map[string]string, error) {
+				return map[string]string{"message": "Hello " + r.Name}, nil
+			},
+		),
+	)
+	svc.RegisterHTTP = func(engine *gin.Engine) {
+		engine.GET("/ping", func(c *gin.Context) { c.String(http.StatusOK, "pong") })
+	}
+
+	run := app.RunMeshWithServices(opts, svc)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- run(ctx) }()
+
+	// Poll the body endpoint until the server is up, then POST a body.
+	deadline := time.Now().Add(5 * time.Second)
+	var resp *http.Response
+	for {
+		r, err := http.Post("http://"+httpAddr+"/hello", "application/json",
+			strings.NewReader(`{"name":"world"}`))
+		if err == nil {
+			resp = r
+			break
+		}
+		if time.Now().After(deadline) {
+			cancel()
+			t.Fatalf("http server did not come up: %v", err)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST /hello status = %d, want 200", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if !strings.Contains(string(body), "Hello world") {
+		t.Fatalf("POST /hello body = %q, want to contain %q", body, "Hello world")
+	}
+
+	// Verify the RegisterHTTP extension route.
+	pr, err := http.Get("http://" + httpAddr + "/ping")
+	if err != nil {
+		cancel()
+		t.Fatalf("GET /ping: %v", err)
+	}
+	if pr.StatusCode != http.StatusOK {
+		t.Fatalf("GET /ping status = %d, want 200", pr.StatusCode)
+	}
+	_ = pr.Body.Close()
+
+	cancel()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("RunMeshWithServices returned error: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("RunMeshWithServices did not return after cancellation")
+	}
+}
+
+// TestRunMeshWithServicesGRPC verifies the runtime gRPC registration: a Method
+// declared via NewMethod is served to the *generated client stub* — no generated
+// RegisterXxxServer bridge is used on the server side.
+func TestRunMeshWithServicesGRPC(t *testing.T) {
+	grpcAddr := freeAddr(t)
+	httpAddr := freeAddr(t)
+
+	opts := options.NewServerOptions()
+	opts.Mesh.ServiceName = "helloworld.Greeter"
+	opts.Mesh.Protocol = "both"
+	opts.Mesh.GRPCAddr = grpcAddr
+	opts.Mesh.HTTPAddr = httpAddr
+	opts.Registry.Type = "none"
+
+	svc := server.NewService("helloworld.Greeter",
+		server.NewMethod("SayHello", "/hello",
+			func() any { return &proto.HelloRequest{} },
+			func(_ context.Context, r *proto.HelloRequest) (*proto.HelloReply, error) {
+				return &proto.HelloReply{Message: "Hello " + r.GetName()}, nil
+			},
+		),
+	)
+
+	run := app.RunMeshWithServices(opts, svc)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- run(ctx) }()
+
+	conn, err := grpc.NewClient(grpcAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		cancel()
+		t.Fatalf("grpc new client: %v", err)
+	}
+	defer conn.Close()
+	client := proto.NewGreeterClient(conn)
+
+	// Retry until the gRPC server is up and serving.
+	var resp *proto.HelloReply
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		r, err := client.SayHello(ctx, &proto.HelloRequest{Name: "world"})
+		if err == nil {
+			resp = r
+			break
+		}
+		if time.Now().After(deadline) {
+			cancel()
+			t.Fatalf("grpc SayHello: %v", err)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	if resp.GetMessage() != "Hello world" {
+		t.Fatalf("message = %q, want %q", resp.GetMessage(), "Hello world")
+	}
+
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("RunMeshWithServices returned error: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("RunMeshWithServices did not return after cancellation")
+	}
+}
+
+// TestRunMeshRegistered verifies the plugin-style HTTP route registration: a
+// route module self-registered via server.RegisterHTTPRoute is auto-discovered
+// and served by RunMeshRegistered without being passed explicitly.
+func TestRunMeshRegistered(t *testing.T) {
+	httpAddr := freeAddr(t)
+
+	// Simulate a business package self-registering its HTTP route in init().
+	server.RegisterHTTPRoute("registered-healthz", server.NewRoute("registered-healthz", func(e *gin.Engine) {
+		e.GET("/healthz", func(c *gin.Context) { c.String(http.StatusOK, "ok") })
+	}))
+
+	opts := options.NewServerOptions()
+	opts.Mesh.ServiceName = "test"
+	opts.Mesh.Protocol = "http"
+	opts.Mesh.HTTPAddr = httpAddr
+	opts.Registry.Type = "none"
+
+	run := app.RunMeshRegistered(opts)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- run(ctx) }()
+
+	deadline := time.Now().Add(5 * time.Second)
+	var resp *http.Response
+	for {
+		r, err := http.Get("http://" + httpAddr + "/healthz")
+		if err == nil {
+			resp = r
+			break
+		}
+		if time.Now().After(deadline) {
+			cancel()
+			t.Fatalf("http server did not come up: %v", err)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	_ = resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /healthz status = %d, want 200", resp.StatusCode)
+	}
+
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("RunMeshRegistered returned error: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("RunMeshRegistered did not return after cancellation")
+	}
+}
+
+// greeterImpl is a local implementation of proto.GreeterServer used to verify the
+// protoc-gen-onexmesh generated HTTP routes (path + body) call the same handler.
+type greeterImpl struct {
+	proto.UnimplementedGreeterServer
+}
+
+func (g *greeterImpl) SayHello(_ context.Context, req *proto.HelloRequest) (*proto.HelloReply, error) {
+	return &proto.HelloReply{Message: "Hello " + req.GetName()}, nil
+}
+
+func (g *greeterImpl) SayHelloPost(_ context.Context, req *proto.HelloRequest) (*proto.HelloReply, error) {
+	return &proto.HelloReply{Message: "Hello (post) " + req.GetName()}, nil
+}
+
+// TestGeneratedHTTPRoute verifies that protobuf-IDL-driven HTTP routes generated
+// by protoc-gen-onexmesh are served: GET /helloworld/{name} binds the path
+// parameter and POST /helloworld binds the body, both calling the same
+// proto.GreeterServer implementation used by gRPC.
+func TestGeneratedHTTPRoute(t *testing.T) {
+	grpcAddr := freeAddr(t)
+	httpAddr := freeAddr(t)
+
+	opts := options.NewServerOptions()
+	opts.Mesh.ServiceName = "helloworld.Greeter"
+	opts.Mesh.Protocol = "both"
+	opts.Mesh.GRPCAddr = grpcAddr
+	opts.Mesh.HTTPAddr = httpAddr
+	opts.Registry.Type = "none"
+
+	srv := &greeterImpl{}
+	svc := proto.NewGreeterService(srv)
+
+	run := app.RunMeshWithServices(opts, svc)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- run(ctx) }()
+
+	// Wait for the server to come up, then exercise both generated routes.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		resp, err := http.Get("http://" + httpAddr + "/helloworld/world")
+		if err == nil {
+			body, _ := io.ReadAll(resp.Body)
+			_ = resp.Body.Close()
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("GET /helloworld/world status = %d", resp.StatusCode)
+			}
+			if !strings.Contains(string(body), "Hello world") {
+				t.Fatalf("GET body = %q, want to contain %q", body, "Hello world")
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			cancel()
+			t.Fatalf("http server did not come up: %v", err)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	// POST /helloworld with a JSON body bound to the whole request message.
+	resp, err := http.Post("http://"+httpAddr+"/helloworld", "application/json",
+		strings.NewReader(`{"name":"onex"}`))
+	if err != nil {
+		cancel()
+		t.Fatalf("POST /helloworld: %v", err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST /helloworld status = %d, want 200", resp.StatusCode)
+	}
+	if !strings.Contains(string(body), "Hello (post) onex") {
+		t.Fatalf("POST body = %q, want to contain %q", body, "Hello (post) onex")
+	}
+
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("RunMeshWithServices returned error: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("RunMeshWithServices did not return after cancellation")
 	}
 }

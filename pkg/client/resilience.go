@@ -34,37 +34,50 @@ func (c resilienceConfig) enabled() bool {
 	return c.timeout > 0 || c.maxConcurrent > 0 || c.breakerWindow > 0 || c.maxAttempts > 1
 }
 
-// buildResilienceInterceptors returns gRPC unary client interceptors for the
-// configured resilience, ordered outermost first so the effective chain is
-// deadline -> bulkhead -> breaker -> retry.
-func buildResilienceInterceptors(cfg resilienceConfig) []grpc.UnaryClientInterceptor {
-	var ints []grpc.UnaryClientInterceptor
+// buildResilienceChain returns the resilience middlewares configured by cfg,
+// outermost first, so the effective chain order is
+// deadline -> bulkhead -> breaker -> retry. The gRPC and HTTP adapters below both
+// consume this single source of truth and only differ in how they wrap the
+// terminal call, eliminating the previously duplicated chain assembly.
+func buildResilienceChain(cfg resilienceConfig) []resilience.Middleware {
+	var mws []resilience.Middleware
 
 	if cfg.timeout > 0 {
-		ints = append(ints, resilienceUnaryInterceptor(resilience.Deadline(cfg.timeout)))
+		mws = append(mws, resilience.Deadline(cfg.timeout))
 	}
 	if cfg.maxConcurrent > 0 {
-		ints = append(ints, resilienceUnaryInterceptor(resilience.Bulkhead(cfg.maxConcurrent)))
+		mws = append(mws, resilience.Bulkhead(cfg.maxConcurrent))
 	}
 	if cfg.breakerWindow > 0 {
-		ints = append(ints, resilienceUnaryInterceptor(resilience.Breaker(
+		mws = append(mws, resilience.Breaker(
 			resilience.WithWindow(cfg.breakerWindow),
 			resilience.WithProbeInterval(cfg.breakerProbe),
 			resilience.WithAcceptable(grpcAcceptable),
-		)))
+		))
 	}
 	if cfg.maxAttempts > 1 {
 		retryable := cfg.retryable
 		if retryable == nil {
 			retryable = grpcRetryable
 		}
-		ints = append(ints, resilienceUnaryInterceptor(resilience.Retry(
+		mws = append(mws, resilience.Retry(
 			resilience.WithMaxAttempts(cfg.maxAttempts),
 			resilience.WithBackoff(cfg.baseBackoff, cfg.maxBackoff),
 			resilience.WithRetryable(retryable),
-		)))
+		))
 	}
 
+	return mws
+}
+
+// buildResilienceInterceptors returns gRPC unary client interceptors for the
+// configured resilience, each adapted from the shared chain.
+func buildResilienceInterceptors(cfg resilienceConfig) []grpc.UnaryClientInterceptor {
+	mws := buildResilienceChain(cfg)
+	ints := make([]grpc.UnaryClientInterceptor, 0, len(mws))
+	for _, mw := range mws {
+		ints = append(ints, resilienceUnaryInterceptor(mw))
+	}
 	return ints
 }
 
@@ -121,34 +134,12 @@ func buildResiliencyInterceptor(p resiliency.Provider, serviceName string) grpc.
 }
 
 // buildResilienceHandler wraps fn with the configured resilience chain for
-// non-gRPC transports (e.g. HTTP), reusing the same primitives. It builds the
-// chain innermost-first so the effective order is
-// deadline -> bulkhead -> breaker -> retry.
+// non-gRPC transports (e.g. HTTP), reusing the shared chain.
 func buildResilienceHandler(cfg resilienceConfig, fn resilience.Handler) resilience.Handler {
+	mws := buildResilienceChain(cfg)
 	h := fn
-	if cfg.maxAttempts > 1 {
-		retryable := cfg.retryable
-		if retryable == nil {
-			retryable = grpcRetryable
-		}
-		h = resilience.Retry(
-			resilience.WithMaxAttempts(cfg.maxAttempts),
-			resilience.WithBackoff(cfg.baseBackoff, cfg.maxBackoff),
-			resilience.WithRetryable(retryable),
-		)(h)
-	}
-	if cfg.breakerWindow > 0 {
-		h = resilience.Breaker(
-			resilience.WithWindow(cfg.breakerWindow),
-			resilience.WithProbeInterval(cfg.breakerProbe),
-			resilience.WithAcceptable(grpcAcceptable),
-		)(h)
-	}
-	if cfg.maxConcurrent > 0 {
-		h = resilience.Bulkhead(cfg.maxConcurrent)(h)
-	}
-	if cfg.timeout > 0 {
-		h = resilience.Deadline(cfg.timeout)(h)
+	for i := len(mws) - 1; i >= 0; i-- {
+		h = mws[i](h)
 	}
 	return h
 }
