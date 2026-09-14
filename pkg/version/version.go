@@ -39,9 +39,10 @@ func Get() *Info {
 	}
 }
 
-// String returns a single-line version string.
+// String returns a single-line version string carrying all build metadata.
 func (i *Info) String() string {
-	return i.GitVersion
+	return fmt.Sprintf("%s (commit %s, built %s, %s, %s)",
+		i.GitVersion, i.GitCommit, i.BuildDate, i.GoVersion, i.Platform)
 }
 
 // ToJSON returns the info as JSON.

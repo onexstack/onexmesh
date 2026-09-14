@@ -6,6 +6,7 @@ package transport
 
 import (
 	"net/http"
+	"sort"
 
 	"google.golang.org/grpc/metadata"
 )
@@ -43,6 +44,7 @@ func (h httpHeader) Keys() []string {
 	for k := range h.Header {
 		keys = append(keys, k)
 	}
+	sort.Strings(keys)
 	return keys
 }
 
@@ -72,5 +74,6 @@ func (h metadataHeader) Keys() []string {
 	for k := range h.MD {
 		keys = append(keys, k)
 	}
+	sort.Strings(keys)
 	return keys
 }

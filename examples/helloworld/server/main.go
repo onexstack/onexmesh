@@ -9,8 +9,9 @@
 //   - 单一实现：greeterService 一个 struct 同时实现 GreeterServer（gRPC）与生成的 HTTP 路由，
 //     SayHello 对应 GET /helloworld/{name}（path 参数），SayHelloPost 对应 POST /helloworld（body）。
 //   - 一行装配：proto.NewGreeterService(srv) 把 gRPC 与 HTTP 注册打包成一个 server.Service，
-//     业务方无需写 grpc.ServiceRegistrar / *gin.Engine 闭包。
-//   - 纯 HTTP 端点（无 proto 定义）：healthz / users / search 经 server.HTTPRoute 在 init() 插件化自注册。
+//     业务方无需写 grpc.ServiceRegistrar / 路由装配样板。
+//   - 纯 HTTP 端点（无 proto 定义）：healthz / users / search / api 直接基于 app.NewEngine 返回的
+//     原生 *gin.Engine 以 Gin 风格注册（Group/GET/...，支持前缀 / 分组 / 嵌套 / 组中间件）。
 //   - 按需开启：opts.Mesh.Protocol = grpc|http|both 控制只起 gRPC / 只起 Gin / 双起。
 //   - 灵活定制：requestID 自定义中间件（双协议）。
 package main
@@ -29,7 +30,6 @@ import (
 	"github.com/onexstack/onexmesh/pkg/codec"
 	"github.com/onexstack/onexmesh/pkg/middleware"
 	"github.com/onexstack/onexmesh/pkg/options"
-	"github.com/onexstack/onexmesh/pkg/server"
 	"github.com/onexstack/onexmesh/pkg/transport"
 	"github.com/onexstack/onexstack/pkg/errorsx"
 )
@@ -61,6 +61,19 @@ func requestID() middleware.Middleware {
 	}
 }
 
+// apiVersion 是演示分组级中间件：给组内所有路由写一个版本响应头，说明统一中间件
+// 可经 middleware.GinHandler 桥接为 gin 的 Group 中间件，只对组内路由生效。
+func apiVersion(v string) middleware.Middleware {
+	return func(next middleware.Handler) middleware.Handler {
+		return func(ctx context.Context, req any) (any, error) {
+			if tr, ok := transport.FromServerContext(ctx); ok {
+				tr.ReplyHeader().Set("X-API-Version", v)
+			}
+			return next(ctx, req)
+		}
+	}
+}
+
 // userReply / searchReply 是 HTTP 特有响应的演示类型（path/query 参数无 gRPC 对应）。
 type userReply struct {
 	ID   string `json:"id"`
@@ -82,38 +95,10 @@ var users = map[string]string{
 func init() {
 	// 注册到名字表，供 Mesh.MiddlewareRoutes 按名引用（"*=requestid" 表示对所有 operation 生效）。
 	middleware.Register("requestid", func() middleware.Middleware { return requestID() })
-
-	// 纯 HTTP 端点（无 protobuf IDL 定义）统一经 HTTPRoute 插件化自注册：
-	// 组合根 RunMeshRegistered 会自动发现并装配，无需在 main 手动汇总。
-	server.RegisterHTTPRoute("healthz", server.NewRoute("healthz", func(e *gin.Engine) {
-		e.GET("/healthz", func(c *gin.Context) { c.String(http.StatusOK, "ok") })
-	}))
-
-	// path 参数演示：GET /users/:id
-	server.RegisterHTTPRoute("users", server.NewRoute("users", func(e *gin.Engine) {
-		e.GET("/users/:id", func(c *gin.Context) {
-			id := c.Param("id")
-			name, ok := users[id]
-			if !ok {
-				codec.RenderError(c, errorsx.ErrNotFound.WithMessage("user %s not found", id))
-				return
-			}
-			codec.Render(c, http.StatusOK, userReply{ID: id, Name: name})
-		})
-	}))
-
-	// query 参数演示：GET /search?q=...&limit=...
-	server.RegisterHTTPRoute("search", server.NewRoute("search", func(e *gin.Engine) {
-		e.GET("/search", func(c *gin.Context) {
-			q := c.DefaultQuery("q", "")
-			limit, _ := strconv.Atoi(c.DefaultQuery("limit", "10"))
-			codec.Render(c, http.StatusOK, searchReply{Query: q, Limit: limit, Items: []string{"onex", "mesh"}})
-		})
-	}))
 }
 
 // greeterService 是唯一业务实现：一个 struct 同时满足 gRPC 的 GreeterServer 接口与
-// 生成的 HTTP 路由（RegisterGreeterHTTPServer），实现 gRPC/HTTP 代码处理一致。
+// 生成的 HTTP 路由（GreeterRouteGroups），实现 gRPC/HTTP 代码处理一致。
 type greeterService struct {
 	proto.UnimplementedGreeterServer
 }
@@ -141,15 +126,52 @@ func main() {
 
 	srv := &greeterService{}
 
+	// 原生 gin：拿到带统一中间件链的 *gin.Engine，直接以 Gin 风格注册纯 HTTP 端点，
+	// 无需 server.NewGroup / RegisterHTTPRoute 与路由名。
+	engine, err := app.NewEngine(opts)
+	if err != nil {
+		panic(err)
+	}
+
+	// 无请求体的纯 HTTP 端点（无需 proto 定义）。
+	engine.GET("/healthz", func(c *gin.Context) {
+		codec.Render(c, http.StatusOK, map[string]string{"status": "ok"})
+	})
+
+	// path 参数演示：GET /users/:id。
+	engine.GET("/users/:id", func(c *gin.Context) {
+		id := c.Param("id")
+		name, ok := users[id]
+		if !ok {
+			codec.RenderError(c, errorsx.ErrNotFound.WithMessage("user %s not found", id))
+			return
+		}
+		codec.Render(c, http.StatusOK, userReply{ID: id, Name: name})
+	})
+
+	// query 参数演示：GET /search?q=...&limit=...
+	engine.GET("/search", func(c *gin.Context) {
+		q := c.DefaultQuery("q", "")
+		limit, _ := strconv.Atoi(c.DefaultQuery("limit", "10"))
+		codec.Render(c, http.StatusOK, searchReply{Query: q, Limit: limit, Items: []string{"onex", "mesh"}})
+	})
+
+	// 分组/前缀/嵌套/组中间件演示：前缀 /api/v1 + 组中间件 apiVersion + 嵌套 /admin 子组。
+	// 组级中间件（middleware.Middleware）经 middleware.GinHandler 桥接为 gin.HandlerFunc。
+	api := engine.Group("/api/v1", middleware.GinHandler(apiVersion("v1")))
+	api.GET("/ping", func(c *gin.Context) { c.String(http.StatusOK, "pong") })
+	api.Group("/admin").GET("/stats", func(c *gin.Context) {
+		codec.Render(c, http.StatusOK, map[string]any{"requests": 42})
+	})
+
 	// 一行装配：NewGreeterService 把 gRPC 注册（RegisterGreeterServer）与生成的 HTTP 路由
-	// （RegisterGreeterHTTPServer）打包成一个 server.Service，无需写 grpc.ServiceRegistrar /
-	// *gin.Engine 闭包。
+	// （GreeterRouteGroups）打包成一个 server.Service，无需写 grpc.ServiceRegistrar / 路由装配样板。
 	svc := proto.NewGreeterService(srv)
 
 	a := app.NewApp("helloworld-server", "Helloworld gRPC + HTTP server with IDL-driven routes.",
 		app.WithOptions(opts),
-		// RunMeshRegistered 装配显式 Service（svc）+ 自动发现 init 自注册的 HTTPRoute 插件。
-		app.WithRun(app.RunMeshRegistered(opts, svc)),
+		// RunMeshWithEngine 装配显式 Service（svc）+ 调用方持有的原生 gin engine。
+		app.WithRun(app.RunMeshWithEngine(opts, engine, svc)),
 	)
 	a.Run()
 }

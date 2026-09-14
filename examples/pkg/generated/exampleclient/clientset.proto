@@ -1,0 +1,20 @@
+// Copyright 2026 Lingfei Kong <colin404@foxmail.com>. All rights reserved.
+// Use of this source code is governed by a MIT style
+// license that can be found in the LICENSE file.
+
+// This anchor file declares the clientset that aggregates the example resource
+// groups. The onexmesh.rest.v1.clientset option tells protoc-gen-onexmesh-client
+// the clientset name and the (group, version) pairs to aggregate; the plugin
+// then generates the full client-go style SDK tree under this directory.
+syntax = "proto3";
+
+package examples.generated;
+
+import "onexmesh/rest/v1/rest.proto";
+
+option go_package = "github.com/onexstack/onexmesh/examples/pkg/generated/exampleclient;exampleclient";
+
+option (onexmesh.rest.v1.clientset) = {
+  name: "exampleclient"
+  groups: [ { group: "apps" version: "v1" } ]
+};

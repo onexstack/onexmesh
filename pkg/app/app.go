@@ -49,6 +49,19 @@ type FlagSetOptions interface {
 	OptionsValidator
 }
 
+// RuntimeApplier initializes framework runtime capabilities (logging, metrics,
+// tracing, config center) after options are validated and before the RunFunc
+// starts. server.ServerOptions implements this.
+type RuntimeApplier interface {
+	Apply() error
+}
+
+// RuntimeShutdowner releases framework runtime resources after the RunFunc
+// returns. server.ServerOptions implements this.
+type RuntimeShutdowner interface {
+	Shutdown(ctx context.Context) error
+}
+
 // Option configures an App.
 type Option func(*App)
 
@@ -76,7 +89,6 @@ type App struct {
 	envPrefix         string
 
 	preRunHooks      []LifecycleHook
-	afterStartHooks  []LifecycleHook
 	beforeStopHooks  []LifecycleHook
 	preShutdownHooks []LifecycleHook
 }
@@ -224,14 +236,25 @@ func (a *App) setupCommand(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	if a.slogOpts != nil {
+	// Apply runtime capabilities (slog/OTel) if the options support it. This is
+	// the single source of truth for logging/metrics/tracing; the legacy
+	// WithSlogOptions path below only runs for standalone slog-only apps.
+	if applier, ok := a.options.(RuntimeApplier); ok {
+		if err := applier.Apply(); err != nil {
+			return fmt.Errorf("apply runtime: %w", err)
+		}
+	} else if a.slogOpts != nil {
 		if err := a.slogOpts.Apply(); err != nil {
 			return fmt.Errorf("apply slog options: %w", err)
 		}
 	}
 
 	if !a.silence {
-		slog.Info("starting application", "name", a.name, "version", a.versionInfo)
+		attrs := []any{"name", a.name}
+		if a.versionInfo != nil {
+			attrs = append(attrs, "version", a.versionInfo.String())
+		}
+		slog.Info("starting application", attrs...)
 	}
 	return nil
 }
@@ -268,6 +291,16 @@ func (a *App) runCommand(cmd *cobra.Command, args []string) error {
 			}
 		}
 		sc()
+	}
+
+	// Release runtime capabilities (OTel providers, output files) after the
+	// RunFunc and shutdown hooks have completed.
+	if shutdowner, ok := a.options.(RuntimeShutdowner); ok {
+		shutdownCtx, sc := context.WithTimeout(context.Background(), a.shutdownTimeout)
+		defer sc()
+		if err := shutdowner.Shutdown(shutdownCtx); err != nil {
+			slog.Error("runtime shutdown failed", "err", err)
+		}
 	}
 	return runErr
 }

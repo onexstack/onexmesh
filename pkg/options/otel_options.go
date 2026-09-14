@@ -113,11 +113,10 @@ type OTelOptions struct {
 	OutputMode OutputMode
 	OutputDir  string
 
-	// Logging configuration (synced into Slog).
+	// Logging configuration for the OTel log bridge (non-classic modes). Plain
+	// slog configuration lives on ServerOptions.Slog and is applied separately.
 	Level     string
 	AddSource bool
-
-	Slog *SlogOptions
 
 	// Internal state.
 	mu        sync.RWMutex
@@ -143,34 +142,16 @@ func NewOTelOptions() *OTelOptions {
 		OutputDir:         "./otel-output",
 		Level:             "info",
 		AddSource:         false,
-		Slog:              NewSlogOptions(),
 		providers:         &OTelProviders{},
 		files:             make([]io.Closer, 0),
 	}
 
-	// Sync slog options.
-	opts.syncSlogOptions()
 	return opts
-}
-
-// syncSlogOptions synchronizes slog options with main options.
-func (o *OTelOptions) syncSlogOptions() {
-	if o.Slog != nil {
-		o.Slog.Level = o.Level
-		o.Slog.AddSource = o.AddSource
-	}
 }
 
 // Validate validates the configuration.
 func (o *OTelOptions) Validate() []error {
 	var errs []error
-
-	// Sync slog options before validation.
-	o.syncSlogOptions()
-
-	if o.Slog != nil {
-		errs = append(errs, o.Slog.Validate()...)
-	}
 
 	if !o.OutputMode.IsValid() {
 		errs = append(errs, fmt.Errorf("invalid output mode: %s", o.OutputMode))
@@ -362,7 +343,9 @@ func (o *OTelOptions) initLogs(ctx context.Context) error {
 
 	switch o.OutputMode {
 	case OutputModeClassic, OutputModeHybrid:
-		return o.Slog.Apply()
+		// Plain slog (already applied by ServerOptions.Apply) is the log sink for
+		// classic and hybrid modes; no OTel log bridge is needed.
+		return nil
 	case OutputModeOTLP:
 		opts := []otlploggrpc.Option{otlploggrpc.WithEndpoint(o.Endpoint)}
 		if o.Insecure {
@@ -414,8 +397,6 @@ func (o *OTelOptions) initLogs(ctx context.Context) error {
 func (o *OTelOptions) Apply() error {
 	o.mu.Lock()
 	defer o.mu.Unlock()
-
-	o.syncSlogOptions()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()

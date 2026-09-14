@@ -15,12 +15,26 @@ import (
 	"github.com/onexstack/onexstack/pkg/errorsx"
 )
 
+// Semantic Reason strings in the PlatformError.SpecificError form. They are
+// shared constants so the sentinel errors and the Is* classifiers in reason.go
+// cannot drift apart.
+const (
+	ReasonCircuitOpen      = "ServiceUnavailable.CircuitOpen"
+	ReasonNoInstance       = "ServiceUnavailable.NoInstance"
+	ReasonTimeout          = "ServiceUnavailable.Timeout"
+	ReasonRateLimited      = "ResourceExhausted.RateLimited"
+	ReasonOverloaded       = "ServiceUnavailable.Overloaded"
+	ReasonBulkheadFull     = "ResourceExhausted.BulkheadFull"
+	ReasonUnauthenticated  = "Unauthenticated"
+	ReasonPermissionDenied = "PermissionDenied"
+)
+
 var (
 	// ErrCircuitOpen indicates the circuit breaker rejected the request because
 	// it is open (or half-open probing failed).
 	ErrCircuitOpen = errorsx.New(
 		http.StatusServiceUnavailable,
-		"ServiceUnavailable.CircuitOpen",
+		ReasonCircuitOpen,
 		"Circuit breaker is open.",
 	)
 
@@ -28,21 +42,21 @@ var (
 	// request.
 	ErrNoInstance = errorsx.New(
 		http.StatusServiceUnavailable,
-		"ServiceUnavailable.NoInstance",
+		ReasonNoInstance,
 		"No available service instance.",
 	)
 
 	// ErrTimeout indicates the request exceeded its deadline.
 	ErrTimeout = errorsx.New(
 		http.StatusGatewayTimeout,
-		"ServiceUnavailable.Timeout",
+		ReasonTimeout,
 		"Request timed out.",
 	)
 
 	// ErrRateLimited indicates the request was dropped by a rate limiter.
 	ErrRateLimited = errorsx.New(
 		http.StatusTooManyRequests,
-		"ResourceExhausted.RateLimited",
+		ReasonRateLimited,
 		"Rate limit exceeded.",
 	)
 
@@ -50,7 +64,7 @@ var (
 	// request because the service is overloaded.
 	ErrServiceOverloaded = errorsx.New(
 		http.StatusServiceUnavailable,
-		"ServiceUnavailable.Overloaded",
+		ReasonOverloaded,
 		"Service is overloaded.",
 	)
 
@@ -58,14 +72,14 @@ var (
 	// bulkhead (concurrency isolator) has no available capacity.
 	ErrBulkheadFull = errorsx.New(
 		http.StatusTooManyRequests,
-		"ResourceExhausted.BulkheadFull",
+		ReasonBulkheadFull,
 		"Downstream bulkhead is full.",
 	)
 
 	// ErrUnauthenticated indicates missing or invalid credentials.
 	ErrUnauthenticated = errorsx.New(
 		http.StatusUnauthorized,
-		"Unauthenticated",
+		ReasonUnauthenticated,
 		"Unauthenticated.",
 	)
 
@@ -73,7 +87,7 @@ var (
 	// authorized for the resource.
 	ErrPermissionDenied = errorsx.New(
 		http.StatusForbidden,
-		"PermissionDenied",
+		ReasonPermissionDenied,
 		"Permission denied.",
 	)
 )

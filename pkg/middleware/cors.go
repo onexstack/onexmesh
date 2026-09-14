@@ -38,10 +38,6 @@ func CORS(cfg CORSConfig) gin.HandlerFunc {
 		methods = []string{http.MethodGet, http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete, http.MethodHead, http.MethodOptions}
 	}
 
-	origin := "*"
-	if len(cfg.AllowOrigins) > 0 {
-		origin = strings.Join(cfg.AllowOrigins, ", ")
-	}
 	expose := ""
 	if len(cfg.ExposeHeaders) > 0 {
 		expose = strings.Join(cfg.ExposeHeaders, ", ")
@@ -49,7 +45,24 @@ func CORS(cfg CORSConfig) gin.HandlerFunc {
 
 	return func(c *gin.Context) {
 		h := c.Writer.Header()
-		h.Set("Access-Control-Allow-Origin", origin)
+		reqOrigin := c.Request.Header.Get("Origin")
+
+		// Reflect the request origin only when it is allowed. With credentials the
+		// spec forbids "*", so we always echo the concrete origin (never a joined
+		// list, which the Access-Control-Allow-Origin header does not accept).
+		if allowedOrigin(cfg.AllowOrigins, reqOrigin) {
+			switch {
+			case cfg.AllowCredentials:
+				if reqOrigin != "" {
+					h.Set("Access-Control-Allow-Origin", reqOrigin)
+				}
+			case len(cfg.AllowOrigins) == 0:
+				h.Set("Access-Control-Allow-Origin", "*")
+			default:
+				h.Set("Access-Control-Allow-Origin", reqOrigin)
+			}
+		}
+
 		if cfg.AllowCredentials {
 			h.Set("Access-Control-Allow-Credentials", "true")
 		}
@@ -79,4 +92,18 @@ func CORS(cfg CORSConfig) gin.HandlerFunc {
 
 		c.Next()
 	}
+}
+
+// allowedOrigin reports whether origin is permitted: an empty allow list permits
+// any origin, and an explicit "*" permits any origin.
+func allowedOrigin(allowed []string, origin string) bool {
+	if len(allowed) == 0 {
+		return true
+	}
+	for _, o := range allowed {
+		if o == "*" || o == origin {
+			return true
+		}
+	}
+	return false
 }

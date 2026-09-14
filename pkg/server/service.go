@@ -8,82 +8,145 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"google.golang.org/grpc"
+	"google.golang.org/protobuf/proto"
 
+	"github.com/onexstack/onexmesh/pkg/codec"
 	"github.com/onexstack/onexmesh/pkg/middleware"
 )
 
-// Service declares a business service served over both gRPC and HTTP. Its
-// Methods are body-based endpoints whose single source of business logic is a
-// unified middleware.Handler: RunMeshWithServices auto-registers them as gRPC
-// unary methods (via RegisterGRPC) and as HTTP routes (via HTTPHandler). The
-// Register and RegisterHTTP callbacks are the symmetric extension points for the
-// protocol-native cases that cannot be erased: gRPC streaming (Register) and the
-// IDL-generated HTTP routes (RegisterHTTP). Pure-HTTP routes with no proto
-// definition belong in server.HTTPRoute instead.
+// Service declares a business service served over gRPC and/or HTTP. A single
+// proto service produces one Service: its gRPC methods are registered via
+// Register (the generated RegisterXxxServer plus any streaming services), and its
+// HTTP routes are declared as proto-first Methods whose request/response types
+// are enforced to be protobuf messages at compile time. RouteGroups is the
+// native-gin escape hatch for pure-HTTP path/query cases with no proto
+// definition. Protocol gating (grpc | http | both) happens in the composition
+// root via opts.Mesh.Protocol.
 type Service struct {
 	// Name is the service name, e.g. "helloworld.Greeter".
 	Name string
-	// Register registers the gRPC business service (e.g. via the generated
-	// RegisterXxxServer, or additional streaming services). It is invoked after
-	// the Methods are auto-registered.
+	// Register registers the gRPC business service (the generated
+	// RegisterXxxServer, or additional streaming services). Nil disables gRPC.
 	Register func(grpc.ServiceRegistrar)
-	// RegisterHTTP registers the HTTP routes for the service (e.g. via the
-	// protoc-gen-onexmesh generated RegisterXxxHTTPServer). It is the HTTP
-	// counterpart of Register and is invoked before the server starts.
-	RegisterHTTP func(*gin.Engine)
-	// Methods declares body-based methods served over both gRPC and HTTP.
+	// Methods declares the proto-first HTTP routes; each Method's Handler is the
+	// same strongly-typed function the gRPC service exposes.
 	Methods []Method
+	// RouteGroups declares native-gin HTTP routes (path/query params, no proto).
+	RouteGroups []*RouteGroup
 }
 
-// Method declares a body-based endpoint reusing a unified Handler as its single
-// source of business logic. The same Method drives a gRPC unary method (Name)
-// and an HTTP route (Method + Path).
+// Method declares one proto RPC method's HTTP surface. It is a data descriptor:
+// Path carries the grpc-gateway-style "{field}" template, Body the body binding
+// ("" or "*"), and NewReq/Handler the proto-first request factory and business
+// logic. The composition root turns it into a gin route via httpHandler.
 type Method struct {
 	// Name is the gRPC method name, e.g. "SayHello".
 	Name string
-	// Method is the HTTP method, e.g. POST, PUT or DELETE.
+	// Method is the HTTP verb, e.g. "GET".
 	Method string
-	// Path is the HTTP route path, e.g. "/hello".
+	// Path is the HTTP path template, e.g. "/helloworld/{name}".
 	Path string
-	// NewReq constructs the request value decoded from the body (or by gRPC).
-	// It must return a pointer; a nil result is invalid for a Method.
-	NewReq func() any
-	// Handler is the unified business logic.
+	// Body is the body binding: "*" for the whole message, "" for none.
+	Body string
+	// NewReq constructs the request message decoded from path/query/body.
+	NewReq func() proto.Message
+	// Handler is the unified business logic, shared with gRPC.
 	Handler middleware.Handler
 }
 
-// NewMethod builds a Method from a strongly-typed business function h, erasing
-// its Req/Resp types behind the unified middleware.Handler via Go generics. The
-// caller never writes req.(*X)/resp.(*Y) assertions, and the same h backs both
-// the gRPC method and the HTTP route. The HTTP method defaults to POST (the
-// usual RPC-to-REST mapping).
-func NewMethod[Req, Resp any](name, path string, newReq func() any, h func(context.Context, Req) (Resp, error)) Method {
+// NewMethod builds a proto-first Method from a strongly-typed business function
+// h. The Req/Resp type parameters are constrained to proto.Message, so request
+// and response types are enforced to be protobuf at compile time, and the same h
+// backs both the gRPC method (via the generated RegisterXxxServer) and the HTTP
+// route (via httpHandler).
+func NewMethod[Req, Resp proto.Message](
+	name, method, path, body string,
+	newReq func() Req,
+	h func(context.Context, Req) (Resp, error),
+) Method {
 	return Method{
-		Name:    name,
-		Method:  http.MethodPost,
-		Path:    path,
-		NewReq:  newReq,
-		Handler: handlerOf(name, h),
+		Name:   name,
+		Method: method,
+		Path:   path,
+		Body:   body,
+		NewReq: func() proto.Message { return newReq() },
+		Handler: func(ctx context.Context, req any) (any, error) {
+			r, ok := req.(Req)
+			if !ok {
+				var zero Req
+				return nil, fmt.Errorf("server: method %s: request %T is not %T", name, req, zero)
+			}
+			return h(ctx, r)
+		},
 	}
 }
 
-// NewService builds a Service from a set of Methods.
+// NewService builds a Service from a set of proto-first Methods.
 func NewService(name string, methods ...Method) Service {
 	return Service{Name: name, Methods: methods}
 }
 
-// handlerOf erases a strongly-typed function into the unified Handler. It
-// type-asserts the decoded request to Req and returns a clear error on mismatch.
-func handlerOf[Req, Resp any](name string, h func(context.Context, Req) (Resp, error)) middleware.Handler {
-	return func(ctx context.Context, req any) (any, error) {
-		r, ok := req.(Req)
-		if !ok {
-			var zero Req
-			return nil, fmt.Errorf("server: method %s: request %T is not %T", name, req, zero)
+// httpHandler adapts the Method into a gin.HandlerFunc: it binds path/query/body
+// into a fresh request message, invokes the unified Handler and renders the
+// response. This replaces the per-method hand-written binding that generated
+// code used to emit.
+func (m Method) httpHandler() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		msg := m.NewReq()
+		if err := codec.BindHTTP(c, msg, m.Path, m.Body); err != nil {
+			codec.RenderError(c, err)
+			return
 		}
-		return h(ctx, r)
+		resp, err := m.Handler(c.Request.Context(), msg)
+		if err != nil {
+			codec.RenderError(c, err)
+			return
+		}
+		if resp == nil {
+			c.Status(http.StatusOK)
+			return
+		}
+		codec.Render(c, http.StatusOK, resp)
 	}
+}
+
+// ginPath converts the grpc-gateway-style "{field}" template into gin's ":field"
+// (or "*field" for the "{field=.../*}" multi-segment form) for route registration.
+func (m Method) ginPath() string {
+	return ginStylePath(m.Path)
+}
+
+// Apply registers the Method's HTTP route onto g.
+func (m Method) Apply(g *gin.RouterGroup) {
+	g.Handle(m.Method, m.ginPath(), m.httpHandler())
+}
+
+// ginStylePath converts a "{field}" path template to gin's ":field" form.
+func ginStylePath(template string) string {
+	var b strings.Builder
+	for i := 0; i < len(template); i++ {
+		if template[i] != '{' {
+			b.WriteByte(template[i])
+			continue
+		}
+		end := strings.IndexByte(template[i:], '}')
+		if end < 0 {
+			b.WriteByte(template[i])
+			continue
+		}
+		field := template[i+1 : i+end]
+		if eq := strings.IndexByte(field, '='); eq >= 0 {
+			b.WriteByte('*')
+			b.WriteString(field[:eq])
+		} else {
+			b.WriteByte(':')
+			b.WriteString(field)
+		}
+		i += end
+	}
+	return b.String()
 }

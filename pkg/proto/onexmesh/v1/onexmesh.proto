@@ -1,0 +1,41 @@
+// Copyright 2026 Lingfei Kong <colin404@foxmail.com>. All rights reserved.
+// Use of this source code is governed by a MIT style
+// license that can be found in the LICENSE file.
+
+// The onexmesh.v1 service-discovery extension lets a .proto file that defines
+// gRPC services request generation of a mesh-aware client. The
+// protoc-gen-onexmesh-client plugin turns it into a zz_generated.mesh.go with a
+// New<Service>MeshClient constructor that discovers the service via the
+// onexmesh registry and dials it through pkg/client.
+//
+// It is a separate extension (50010) so it never interferes with the REST
+// options in onexmesh/rest/v1 (50000~50003), the http option (51236) in this
+// package, or the onexmesh.errno.v1 options (51234/51235).
+syntax = "proto3";
+
+package onexmesh.v1;
+
+import "google/protobuf/descriptor.proto";
+
+option go_package = "github.com/onexstack/onexmesh/pkg/proto/onexmesh/v1;onexmeshv1";
+
+// MeshService declares onexmesh service-discovery code generation for a .proto
+// file that defines gRPC services.
+extend google.protobuf.FileOptions {
+  MeshService mesh_service = 50010;
+}
+
+message MeshService {
+  // enable_service_discovery is the master switch: when false or unset, no
+  // mesh client code is generated and existing output is unaffected.
+  bool enable_service_discovery = 1;
+  // service_name is the logical service name in the registry, in the form
+  // "{business}.{subdomain-app}.{microservice}", e.g. "edu.course.student-api".
+  // When empty, it is inferred from the proto package.
+  string service_name = 2;
+  // registry is the registry backend type: "polaris" (default), "etcd",
+  // "kubernetes", "consul", "nacos" or "eureka".
+  string registry = 3;
+  // protocol is the transport protocol: "grpc" (default) or "http".
+  string protocol = 4;
+}

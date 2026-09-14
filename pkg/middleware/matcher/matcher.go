@@ -24,6 +24,9 @@ type Matcher struct {
 	defaults []middleware.Middleware
 	exact    map[string][]middleware.Middleware
 	prefixes map[string][]middleware.Middleware
+	// sorted holds the prefix keys in descending length order, rebuilt on Add so
+	// Match does no per-request sort or allocation.
+	sorted []string
 }
 
 // New returns an empty Matcher.
@@ -45,13 +48,25 @@ func (m *Matcher) Add(selector string, mws ...middleware.Middleware) *Matcher {
 	switch {
 	case selector == "*":
 		m.prefixes[""] = append(m.prefixes[""], mws...)
+		m.rebuildSorted()
 	case strings.HasSuffix(selector, "*"):
 		prefix := strings.TrimSuffix(selector, "*")
 		m.prefixes[prefix] = append(m.prefixes[prefix], mws...)
+		m.rebuildSorted()
 	default:
 		m.exact[selector] = append(m.exact[selector], mws...)
 	}
 	return m
+}
+
+// rebuildSorted recomputes the descending-length prefix order. It runs only on
+// Add (startup), never on the request path.
+func (m *Matcher) rebuildSorted() {
+	m.sorted = make([]string, 0, len(m.prefixes))
+	for prefix := range m.prefixes {
+		m.sorted = append(m.sorted, prefix)
+	}
+	sort.Slice(m.sorted, func(i, j int) bool { return len(m.sorted[i]) > len(m.sorted[j]) })
 }
 
 // Match returns the middlewares applying to operation: defaults first, then an
@@ -64,15 +79,10 @@ func (m *Matcher) Match(operation string) []middleware.Middleware {
 		ms = append(ms, exact...)
 	}
 
-	var matched []string
-	for prefix := range m.prefixes {
+	for _, prefix := range m.sorted {
 		if strings.HasPrefix(operation, prefix) {
-			matched = append(matched, prefix)
+			ms = append(ms, m.prefixes[prefix]...)
 		}
-	}
-	sort.Slice(matched, func(i, j int) bool { return len(matched[i]) > len(matched[j]) })
-	for _, prefix := range matched {
-		ms = append(ms, m.prefixes[prefix]...)
 	}
 
 	return ms

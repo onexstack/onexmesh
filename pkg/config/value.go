@@ -35,9 +35,25 @@ func (v *value) Int() int {
 	switch t := v.data.(type) {
 	case int:
 		return t
+	case int8:
+		return int(t)
+	case int16:
+		return int(t)
+	case int32:
+		return int(t)
 	case int64:
 		return int(t)
+	case uint:
+		return int(t)
+	case uint8:
+		return int(t)
+	case uint16:
+		return int(t)
+	case uint32:
+		return int(t)
 	case uint64:
+		return int(t)
+	case float32:
 		return int(t)
 	case float64:
 		return int(t)
@@ -58,9 +74,25 @@ func (v *value) Int64() int64 {
 	switch t := v.data.(type) {
 	case int:
 		return int64(t)
+	case int8:
+		return int64(t)
+	case int16:
+		return int64(t)
+	case int32:
+		return int64(t)
 	case int64:
 		return t
+	case uint:
+		return int64(t)
+	case uint8:
+		return int64(t)
+	case uint16:
+		return int64(t)
+	case uint32:
+		return int64(t)
 	case uint64:
+		return int64(t)
+	case float32:
 		return int64(t)
 	case float64:
 		return int64(t)
@@ -76,9 +108,27 @@ func (v *value) Float64() float64 {
 	switch t := v.data.(type) {
 	case float64:
 		return t
+	case float32:
+		return float64(t)
 	case int:
 		return float64(t)
+	case int8:
+		return float64(t)
+	case int16:
+		return float64(t)
+	case int32:
+		return float64(t)
 	case int64:
+		return float64(t)
+	case uint:
+		return float64(t)
+	case uint8:
+		return float64(t)
+	case uint16:
+		return float64(t)
+	case uint32:
+		return float64(t)
+	case uint64:
 		return float64(t)
 	case string:
 		f, _ := strconv.ParseFloat(t, 64)

@@ -42,9 +42,13 @@ func Auth(key, identityKey string) Middleware {
 				return nil, errno.ErrUnauthenticated.WithMessage("invalid token")
 			}
 
-			var identity string
-			if v, exists := claims[identityKey]; exists {
-				identity, _ = v.(string)
+			v, exists := claims[identityKey]
+			if !exists {
+				return nil, errno.ErrUnauthenticated.WithMessage("missing identity claim %q", identityKey)
+			}
+			identity, ok := v.(string)
+			if !ok || identity == "" {
+				return nil, errno.ErrUnauthenticated.WithMessage("invalid identity claim %q", identityKey)
 			}
 
 			ctx = context.WithValue(ctx, authCtxKey{}, identity)
@@ -60,12 +64,16 @@ func IdentityFromContext(ctx context.Context) (string, bool) {
 	return id, ok
 }
 
-// parseBearer extracts the token from a "Bearer <token>" header value.
+// parseBearer extracts the token from a "Bearer <token>" header value. The scheme
+// is case-insensitive per RFC 7235.
 func parseBearer(header string) (string, bool) {
-	const prefix = "Bearer "
-	if !strings.HasPrefix(header, prefix) {
+	const prefix = "bearer "
+	if len(header) < len(prefix) {
 		return "", false
 	}
-	token := strings.TrimSpace(strings.TrimPrefix(header, prefix))
+	if !strings.EqualFold(header[:len(prefix)], prefix) {
+		return "", false
+	}
+	token := strings.TrimSpace(header[len(prefix):])
 	return token, token != ""
 }

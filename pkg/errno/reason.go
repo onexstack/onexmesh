@@ -42,20 +42,20 @@ func IsGatewayTimeout(err error) bool { return errorsx.Code(err) == http.StatusG
 
 // IsCircuitOpen reports whether err is a circuit-open failure.
 func IsCircuitOpen(err error) bool {
-	return errorsx.Reason(err) == "ServiceUnavailable.CircuitOpen"
+	return errorsx.Reason(err) == ReasonCircuitOpen
 }
 
 // IsTimeout reports whether err is a timeout failure.
 func IsTimeout(err error) bool {
-	return errorsx.Reason(err) == "ServiceUnavailable.Timeout"
+	return errorsx.Reason(err) == ReasonTimeout
 }
 
 // IsRateLimited reports whether err is a rate-limit failure.
 func IsRateLimited(err error) bool {
-	return errorsx.Reason(err) == "ResourceExhausted.RateLimited"
+	return errorsx.Reason(err) == ReasonRateLimited
 }
 
 // IsOverloaded reports whether err is an adaptive-shedding overload failure.
 func IsOverloaded(err error) bool {
-	return errorsx.Reason(err) == "ServiceUnavailable.Overloaded"
+	return errorsx.Reason(err) == ReasonOverloaded
 }

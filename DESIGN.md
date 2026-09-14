@@ -171,7 +171,8 @@ BuildClientDialOptions` 把「配置对象 → 运行时对象」转换集中在
 函数擦除为统一 `middleware.Handler`，框架层用 gRPC 反射注册（`Service.RegisterGRPC` 运行时构造
 `grpc.ServiceDesc`，无需生成的 `RegisterXxxServer`）与 HTTP 路由生成同时服务两种协议，再委托给
 `RunMesh`。协议特有场景走扩展点：gRPC streaming 经 `Service.Register`、IDL 生成的 HTTP 路由经
-`Service.RegisterHTTP`；纯 HTTP 端点（无 proto 定义）经 `server.RegisterHTTPRoute` 插件化。
+`Service.RouteGroups`（流式 `server.RouteGroup` 描述符）；纯 HTTP 端点（无 proto 定义）经
+`server.RegisterHTTPRoute` 插件化。
 
 ### 3.7 protobuf IDL 驱动的 HTTP 路由（grpc-gateway 风格）
 
@@ -179,12 +180,12 @@ BuildClientDialOptions` 把「配置对象 → 运行时对象」转换集中在
 （`pkg/proto/onexmesh/v1/http.proto` 的自包含 `HttpRule`，替代 `google.api.http`），
 `cmd/protoc-gen-onexmesh` 插件读取注解并生成 `*_http.pb.go`：
 
-- 生成 `Register<Service>HTTPServer(e *gin.Engine, srv <Service>Server)`，复用 gRPC 的
-  `<Service>Server` 接口（单一接口、单一 struct 双协议）。
+- 生成 `<Service>RouteGroups(srv <Service>Server) []*server.RouteGroup`，复用 gRPC 的
+  `<Service>Server` 接口（单一接口、单一 struct 双协议），以 `server.NewGroup("")` 流式链
+  `.GET/.POST/...` 声明每条路由（handler 仍是 `gin.HandlerFunc`）。
 - 额外生成 `New<Service>Service(srv <Service>Server) server.Service` 工厂，把 gRPC 注册
-  （`Register<Service>Server`）与 HTTP 注册（`Register<Service>HTTPServer`）两个固定样板收进
-  生成代码，业务方一行 `proto.NewGreeterService(srv)` 完成装配，无需写 `grpc.ServiceRegistrar` /
-  `*gin.Engine` 闭包。
+  （`Register<Service>Server`）与 HTTP 路由（`<Service>RouteGroups`）两个固定样板收进生成代码，
+  业务方一行 `proto.NewGreeterService(srv)` 完成装配，无需写 `grpc.ServiceRegistrar` / 路由装配样板。
 - 每个 handler 依序 `codec.BindPath`（`{field}` path 参数）→ `codec.BindQuery`（query 参数）→
   `codec.Bind`（`body:"*"` 整 message），再调用同一业务方法、`codec.Render` 编码响应。
 - `codec.BindPath/BindQuery` 用 protoreflect + strconv 做 string→标量/enum/repeated/嵌套 回填
@@ -195,9 +196,35 @@ BuildClientDialOptions` 把「配置对象 → 运行时对象」转换集中在
 多 segment path `{name=messages/*}` 留作后续扩展。
 
 `RunMeshRegistered` 是插件化入口：业务包在 `init()` 里 `server.RegisterHTTPRoute` 自注册
-HTTP-only 路由模块（`server.HTTPRoute` 自描述接口），组合根自动发现装配，无需显式 import/汇总。
+HTTP-only 路由模块（`server.HTTPRoute` 自描述接口，`*server.RouteGroup` 直接满足该接口，其
+`RouteGroups()` 返回自身，Gin `RouterGroup` 风格流式链 `NewGroup/Group/Use/GET/POST/...`，支持
+前缀/分组/嵌套/组中间件），组合根自动发现装配，无需显式 import/汇总。
 `RunMeshWithRoutes(opts, routes...)` 则按显式 `[]HTTPRoute` 装配纯 HTTP 服务。三者都委托 `RunMesh`，
-共享中间件链、注册与生命周期。
+共享中间件链、注册与生命周期。此外，纯 HTTP 端点也可直接基于 `app.NewEngine` 返回的原生
+`*gin.Engine` 以 Gin 风格注册（`engine.Group/GET/POST/...`，无需 `NewGroup`/`RegisterHTTPRoute` 与
+路由名），`RunMeshWithEngine(opts, engine, services...)` 用于双协议场景、`RunMeshHTTP(opts, engine)`
+用于纯 HTTP 场景。
+
+### 3.8 client-go 风格 REST SDK 生成（protoc-gen-onexmesh-client）
+
+`cmd/protoc-gen-onexmesh-client` 从**资源型 IDL** 生成 client-go 风格 SDK，与 3.7 的 service-centric
+路由生成互补（面向 resource + verbs，而非 service + method），二者输出文件、符号、扩展号完全隔离：
+
+- **IDL 契约**（`pkg/proto/onexmesh/`）：`rest/v1`（`file`/`resource`/`list`/`clientset` 扩展，
+  50000~50003）、`meta/v1`（`TypeMeta`/`ObjectMeta`/`ListMeta`，字段名用 camelCase 以对齐 K8s JSON
+  wire）、`v1/onexmesh.proto`（`mesh_service` 扩展，50010）。与 `http`(51236)、`errno`(51234/51235)
+  均在 ≥50000 自定义区间，无碰撞。
+- **插件结构**：`spec.Load(gen)` 解析 descriptor 生成 IR → 各 `generator.Generate(...) string` 纯函数
+  产出源码 → 统一 `go/format.Source` + `gen.NewGeneratedFile` 写盘（无 text/template，与现有插件一致）。
+- **产物**：锚点目录下的 `clientset.go`/`scheme/`/`fake/`/`typed/<group>/<version>/`/
+  `informers/`/`listers/`/`applyconfigurations/`，以及资源 proto 同目录的 `zz_generated.{meta,register}.go`。
+  typed/fake client 直接 embed `gentype.ClientWithListAndApply`/`FakeClientWithListAndApply`，把 REST
+  请求/序列化交给 client-go 运行时。
+- **双协议治理**：gRPC 侧 `mesh_service` option 生成 `zz_generated.mesh.go` 的
+  `New<Service>MeshClient`（复用 `client.Dial`/`WithRegistry`）；REST 侧 `pkg/client/rest` 提供
+  `NewForMeshConfig`，把 `rest.Config.WrapTransport` 注入 `meshRoundTripper`——每次请求经 `registry`
+  发现 + `selector` 选节点改写 `URL.Scheme/Host` 后转发，可选叠加 retry/breaker/bulkhead，使 typed
+  clientset 的每次 CRUD 都内建服务发现与负载均衡。生成 clientset 额外产出 `NewForMesh` 构造。
 
 ## 4. 扩展指南
 

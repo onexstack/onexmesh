@@ -15,10 +15,18 @@ import (
 
 func init() {
 	registry.RegisterRegistrar("consul", func(opts any) (registry.Registrar, error) {
-		return NewRegistrar(opts.(Options))
+		o, ok := opts.(Options)
+		if !ok {
+			return nil, fmt.Errorf("consul: options must be consul.Options, got %T", opts)
+		}
+		return NewRegistrar(o)
 	})
 	registry.RegisterDiscovery("consul", func(opts any) (registry.Discovery, error) {
-		return NewDiscovery(opts.(Options))
+		o, ok := opts.(Options)
+		if !ok {
+			return nil, fmt.Errorf("consul: options must be consul.Options, got %T", opts)
+		}
+		return NewDiscovery(o)
 	})
 }
 

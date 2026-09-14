@@ -3,8 +3,8 @@
 // license that can be found in the LICENSE file.
 
 // Command protoc-gen-onexmesh is a protoc plugin that generates HTTP route
-// registration code for a service whose methods carry the onexmesh.v1.http
-// annotation (see pkg/proto/onexmesh/v1/http.proto).
+// descriptors for a service whose methods carry the onexmesh.v1.http annotation
+// (see pkg/proto/onexmesh/v1/http.proto).
 //
 // For an annotated method:
 //
@@ -14,21 +14,18 @@
 //	  }
 //	}
 //
-// it emits a *_http.pb.go with:
+// it emits a *_http.pb.go with a single factory:
 //
-//	func RegisterGreeterHTTPServer(e *gin.Engine, srv GreeterServer)
 //	func NewGreeterService(srv GreeterServer) server.Service
 //
-// where RegisterGreeterHTTPServer registers the gin routes (decoding path/query/
-// body and calling the same GreeterServer used by gRPC), and NewGreeterService
-// packages both the gRPC and HTTP registration into a single server.Service so
-// callers write no grpc.ServiceRegistrar / gin.Engine plumbing themselves.
+// The returned server.Service declares proto-first Methods whose request/response
+// types are enforced to be protobuf at compile time, plus the generated gRPC
+// RegisterXxxServer bridge. A single srv.SayHello function therefore serves both
+// protocols; the HTTP binding (path/query/body) is performed by the shared
+// codec.BindHTTP runtime rather than per-method hand-written handlers.
 package main
 
 import (
-	"strconv"
-	"strings"
-
 	"google.golang.org/protobuf/compiler/protogen"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/descriptorpb"
@@ -56,7 +53,7 @@ func main() {
 type binding struct {
 	httpMethod string // GET / POST / PUT / DELETE / PATCH
 	path       string // original path template, e.g. "/helloworld/{name}"
-	hasBody    bool   // whether the request body is bound (body == "*")
+	body       string // "*" when the whole message is the body, "" otherwise
 }
 
 func generate(gen *protogen.Plugin, file *protogen.File) error {
@@ -90,48 +87,41 @@ func generate(gen *protogen.Plugin, file *protogen.File) error {
 	g.P()
 	g.P("package ", file.GoPackageName)
 	g.P()
-	g.P("import (")
-	g.P("    \"net/http\"")
-	g.P()
-	g.P("    \"github.com/gin-gonic/gin\"")
-	g.P("    \"google.golang.org/grpc\"")
-	g.P()
-	g.P("    \"github.com/onexstack/onexmesh/pkg/codec\"")
-	g.P("    \"github.com/onexstack/onexmesh/pkg/server\"")
-	g.P(")")
+
+	// Resolve the framework package qualifiers up front. QualifiedGoIdent records
+	// their imports (and any well-known request types) so protogen emits a single
+	// correct import block rather than a hand-written one that cannot account for
+	// types such as google.protobuf.Empty.
+	serviceRegistrar := g.QualifiedGoIdent(protogen.GoIdent{GoImportPath: "google.golang.org/grpc", GoName: "ServiceRegistrar"})
+	serverService := g.QualifiedGoIdent(protogen.GoIdent{GoImportPath: "github.com/onexstack/onexmesh/pkg/server", GoName: "Service"})
+	serverMethod := g.QualifiedGoIdent(protogen.GoIdent{GoImportPath: "github.com/onexstack/onexmesh/pkg/server", GoName: "Method"})
+	serverNewMethod := g.QualifiedGoIdent(protogen.GoIdent{GoImportPath: "github.com/onexstack/onexmesh/pkg/server", GoName: "NewMethod"})
 	g.P()
 
 	for _, svc := range services {
 		iface := svc.service.GoName + "Server"
-		g.P("// Register", svc.service.GoName, "HTTPServer registers the HTTP routes for service ",
-			svc.service.GoName, " on engine. Each route decodes path/query/body into the request message")
-		g.P("// and calls the same ", iface, " implementation used by gRPC.")
-		g.P("func Register", svc.service.GoName, "HTTPServer(e *gin.Engine, srv ", iface, ") {")
-		for i, m := range svc.methods {
-			b := parseBinding(m)
-			g.P("    e.", b.httpMethod, "(\"", ginPath(b.path), "\", ", handlerName(svc.service, m, i), "(srv))")
-		}
-		g.P("}")
-		g.P()
 
 		g.P("// New", svc.service.GoName, "Service packages the gRPC and HTTP registration for service ",
-			svc.service.GoName, " into a single server.Service backed by one implementation.")
-		g.P("func New", svc.service.GoName, "Service(srv ", iface, ") server.Service {")
-		g.P("    return server.Service{")
+			svc.service.GoName, " into a single ", serverService, " backed by one implementation.")
+		g.P("// Each Method is proto-first: its request/response are protobuf messages and its Handler is the same ",
+			iface, " method used by gRPC.")
+		g.P("func New", svc.service.GoName, "Service(srv ", iface, ") ", serverService, " {")
+		g.P("    return ", serverService, "{")
 		g.P("        Name: ", svc.service.GoName, "_ServiceDesc.ServiceName,")
-		g.P("        Register: func(s grpc.ServiceRegistrar) {")
+		g.P("        Register: func(s ", serviceRegistrar, ") {")
 		g.P("            Register", svc.service.GoName, "Server(s, srv)")
 		g.P("        },")
-		g.P("        RegisterHTTP: func(e *gin.Engine) {")
-		g.P("            Register", svc.service.GoName, "HTTPServer(e, srv)")
+		g.P("        Methods: []", serverMethod, "{")
+		for _, m := range svc.methods {
+			b := parseBinding(m)
+			in := g.QualifiedGoIdent(m.Input.GoIdent)
+			g.P("            ", serverNewMethod, "(\"", m.GoName, "\", \"", b.httpMethod, "\", \"", b.path, "\", \"", b.body,
+				"\", func() *", in, " { return &", in, "{} }, srv.", m.GoName, "),")
+		}
 		g.P("        },")
 		g.P("    }")
 		g.P("}")
 		g.P()
-
-		for i, m := range svc.methods {
-			emitHandler(g, svc.service, m, i, parseBinding(m))
-		}
 	}
 	return nil
 }
@@ -164,73 +154,8 @@ func parseBinding(m *protogen.Method) binding {
 	case rule.GetPatch() != "":
 		b.httpMethod, b.path = "PATCH", rule.GetPatch()
 	}
-	b.hasBody = rule.GetBody() == "*"
+	if rule.GetBody() == "*" {
+		b.body = "*"
+	}
 	return b
-}
-
-// ginPath converts a grpc-gateway-style path template "{field}" into gin's
-// ":field" (or "*field" for the "{field=.../*}" multi-segment form).
-func ginPath(template string) string {
-	var b strings.Builder
-	for i := 0; i < len(template); i++ {
-		if template[i] != '{' {
-			b.WriteByte(template[i])
-			continue
-		}
-		end := strings.IndexByte(template[i:], '}')
-		if end < 0 {
-			b.WriteByte(template[i])
-			continue
-		}
-		field := template[i+1 : i+end]
-		if eq := strings.IndexByte(field, '='); eq >= 0 {
-			b.WriteByte('*')
-			b.WriteString(field[:eq])
-		} else {
-			b.WriteByte(':')
-			b.WriteString(field)
-		}
-		i += end
-	}
-	return b.String()
-}
-
-// handlerName returns the Go identifier for a method's HTTP handler, e.g.
-// _Greeter_SayHello0_HTTP_Handler.
-func handlerName(svc *protogen.Service, m *protogen.Method, idx int) string {
-	return "_" + svc.GoName + "_" + m.GoName + strconv.Itoa(idx) + "_HTTP_Handler"
-}
-
-// emitHandler writes the gin.HandlerFunc for a method.
-func emitHandler(g *protogen.GeneratedFile, svc *protogen.Service, m *protogen.Method, idx int, b binding) {
-	iface := svc.GoName + "Server"
-	in := m.Input.GoIdent.GoName
-	handler := handlerName(svc, m, idx)
-
-	g.P("func ", handler, "(srv ", iface, ") gin.HandlerFunc {")
-	g.P("    return func(c *gin.Context) {")
-	g.P("        var in ", in)
-	g.P("        if err := codec.BindPath(c, &in, \"", b.path, "\"); err != nil {")
-	g.P("            codec.RenderError(c, err)")
-	g.P("            return")
-	g.P("        }")
-	g.P("        if err := codec.BindQuery(c, &in); err != nil {")
-	g.P("            codec.RenderError(c, err)")
-	g.P("            return")
-	g.P("        }")
-	if b.hasBody {
-		g.P("        if err := codec.Bind(c, &in); err != nil {")
-		g.P("            codec.RenderError(c, err)")
-		g.P("            return")
-		g.P("        }")
-	}
-	g.P("        out, err := srv.", m.GoName, "(c.Request.Context(), &in)")
-	g.P("        if err != nil {")
-	g.P("            codec.RenderError(c, err)")
-	g.P("            return")
-	g.P("        }")
-	g.P("        codec.Render(c, http.StatusOK, out)")
-	g.P("    }")
-	g.P("}")
-	g.P()
 }

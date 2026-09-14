@@ -1,0 +1,113 @@
+// Copyright 2026 Lingfei Kong <colin404@foxmail.com>. All rights reserved.
+// Use of this source code is governed by a MIT style
+// license that can be found in the LICENSE file.
+
+// The onexmesh.rest.v1 extensions declare the REST semantics of a resource
+// message so the protoc-gen-onexmesh-client plugin can generate a client-go
+// style SDK (clientset + typed + fake + informer + lister + applyconfigurations).
+//
+// Extension field numbers live in the reserved custom-option range (>= 50000),
+// and are distinct from onexmesh.v1.http (51236), onexmesh.errno.v1
+// (51234/51235) and google.api.http (72295728).
+syntax = "proto3";
+
+package onexmesh.rest.v1;
+
+import "google/protobuf/descriptor.proto";
+
+option go_package = "github.com/onexstack/onexmesh/pkg/proto/onexmesh/rest/v1;restv1";
+
+// FileRest declares the default API group and version for all resource
+// messages defined in the same .proto file. A message-level Resource option
+// may override these per-resource.
+//
+// A resource .proto file SHOULD set this so each message does not need to
+// repeat the group/version.
+extend google.protobuf.FileOptions {
+  FileRest file = 50000;
+}
+
+// Clientset declares an aggregation anchor: the clientset name plus the list
+// of (group, version) pairs it aggregates into a single client-go style
+// clientset. This option is set on a dedicated "anchor" .proto file.
+extend google.protobuf.FileOptions {
+  Clientset clientset = 50003;
+}
+
+// Resource marks a message as a REST resource object. The message MUST contain
+// the conventional top-level fields: apiVersion (string), kind (string) and
+// metadata (ObjectMeta).
+extend google.protobuf.MessageOptions {
+  Resource resource = 50001;
+}
+
+// List marks a message as the list type for a resource. The item type is
+// inferred from the repeated "items" field.
+extend google.protobuf.MessageOptions {
+  List list = 50002;
+}
+
+message FileRest {
+  // Short API group name, e.g. "apps". Empty means the core group ("").
+  string group = 1;
+  // API version, e.g. "v1".
+  string version = 2;
+}
+
+message Clientset {
+  // Package name of the generated clientset, e.g. "exampleclient".
+  string name = 1;
+  // API path served by the resource groups, "/apis" (or "/api" for the core
+  // group).
+  string api_path = 2;
+  // Prefer protobuf encoding over JSON when talking to the server.
+  bool prefer_protobuf = 3;
+  // The (group, version) pairs aggregated into this clientset.
+  repeated GroupRef groups = 4;
+}
+
+message GroupRef {
+  string group = 1;
+  string version = 2;
+}
+
+message Resource {
+  // Short API group name; empty means core. Defaults to the file-level value.
+  string group = 1;
+  // API version. Defaults to the file-level value.
+  string version = 2;
+  // REST plural name, e.g. "deployments". Defaults to lowercase(singular)+"s".
+  string plural = 3;
+  // REST singular name, e.g. "deployment". Defaults to lowercase(kind).
+  string singular = 4;
+  // Whether the resource is namespace-scoped. Defaults to true. Use
+  // "optional bool" so an explicit false (cluster-scoped) is distinguishable
+  // from unset.
+  optional bool namespaced = 5;
+  // Verb set to generate. Defaults to
+  // get,list,watch,create,update,patch,delete (plus updateStatus when the
+  // message has a status field).
+  repeated string verbs = 6;
+  // Subresources such as status or scale.
+  repeated Subresource subresources = 7;
+  // Group Go name override (aligned with client-gen's +groupGoName).
+  string short_group = 8;
+  // Do not generate UpdateStatus/ApplyStatus even if a status field exists.
+  bool no_status = 9;
+}
+
+message Subresource {
+  // Subresource name, e.g. "status".
+  string name = 1;
+  // URL path segment; defaults to name.
+  string path = 2;
+  // Verbs to generate for this subresource; defaults to get,update.
+  repeated string verbs = 3;
+  // Result kind for this subresource, if different from the parent resource.
+  string kind = 4;
+}
+
+message List {
+  // The parent resource of this list type. group/version must match the item.
+  Resource resource = 1;
+}

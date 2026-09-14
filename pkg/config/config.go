@@ -32,15 +32,9 @@ type Watcher interface {
 	Stop() error
 }
 
-// Loader decodes and merges raw KeyValues into a snapshot.
+// Loader decodes and merges raw KeyValues into a reader.
 type Loader interface {
 	Load(sources ...Source) error
-	Snapshot() (*Snapshot, error)
-}
-
-// Snapshot is a point-in-time merged configuration.
-type Snapshot struct {
-	data []byte
 }
 
 // Reader provides random access to merged configuration.

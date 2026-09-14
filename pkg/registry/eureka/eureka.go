@@ -5,6 +5,7 @@
 package eureka
 
 import (
+	"fmt"
 	"strings"
 	"time"
 
@@ -13,10 +14,18 @@ import (
 
 func init() {
 	registry.RegisterRegistrar("eureka", func(opts any) (registry.Registrar, error) {
-		return NewRegistrar(opts.(Options))
+		o, ok := opts.(Options)
+		if !ok {
+			return nil, fmt.Errorf("eureka: options must be eureka.Options, got %T", opts)
+		}
+		return NewRegistrar(o)
 	})
 	registry.RegisterDiscovery("eureka", func(opts any) (registry.Discovery, error) {
-		return NewDiscovery(opts.(Options))
+		o, ok := opts.(Options)
+		if !ok {
+			return nil, fmt.Errorf("eureka: options must be eureka.Options, got %T", opts)
+		}
+		return NewDiscovery(o)
 	})
 }
 

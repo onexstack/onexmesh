@@ -7,20 +7,7 @@
 // its cancellation or deadline, so a finished request does not abort the task.
 package contextx
 
-import (
-	"context"
-	"time"
-)
-
-type valueOnlyContext struct {
-	context.Context
-}
-
-func (valueOnlyContext) Deadline() (time.Time, bool) { return time.Time{}, false }
-
-func (valueOnlyContext) Done() <-chan struct{} { return nil }
-
-func (valueOnlyContext) Err() error { return nil }
+import "context"
 
 // ValueOnlyFrom returns a context carrying only ctx's values, dropping its
 // deadline, cancellation and error propagation. It delegates to the standard

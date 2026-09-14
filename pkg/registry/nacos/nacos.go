@@ -18,10 +18,18 @@ import (
 
 func init() {
 	registry.RegisterRegistrar("nacos", func(opts any) (registry.Registrar, error) {
-		return NewRegistrar(opts.(Options))
+		o, ok := opts.(Options)
+		if !ok {
+			return nil, fmt.Errorf("nacos: options must be nacos.Options, got %T", opts)
+		}
+		return NewRegistrar(o)
 	})
 	registry.RegisterDiscovery("nacos", func(opts any) (registry.Discovery, error) {
-		return NewDiscovery(opts.(Options))
+		o, ok := opts.(Options)
+		if !ok {
+			return nil, fmt.Errorf("nacos: options must be nacos.Options, got %T", opts)
+		}
+		return NewDiscovery(o)
 	})
 }
 

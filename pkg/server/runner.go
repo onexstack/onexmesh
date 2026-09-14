@@ -44,7 +44,7 @@ func serve(ctx context.Context, s servable, reg registry.Registrar, inst *regist
 		}
 	}
 
-	slog.Info("starting "+kind+" server", "addr", addr)
+	slog.Info("starting server", "kind", kind, "addr", addr)
 
 	errCh := make(chan error, 1)
 	go func() {
@@ -53,16 +53,22 @@ func serve(ctx context.Context, s servable, reg registry.Registrar, inst *regist
 
 	select {
 	case err := <-errCh:
+		// The server exited on its own (clean close or a real accept failure).
 		if err != nil && !s.isClosedError(err) {
 			return err
 		}
 		return nil
 	case <-ctx.Done():
-		slog.Info(kind+" server context canceled, shutting down", "addr", addr)
+		// Context canceled: gracefully shut down, then drain the serve goroutine so
+		// a real startup error that raced the cancellation is not silently dropped.
+		slog.Info("server context canceled, shutting down", "kind", kind, "addr", addr)
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), defaultShutdownTimeout)
 		defer cancel()
 		if err := s.Shutdown(shutdownCtx); err != nil {
-			slog.Error(kind+" server shutdown failed", "error", err)
+			slog.Error("server shutdown failed", "kind", kind, "error", err)
+		}
+		if err := <-errCh; err != nil && !s.isClosedError(err) {
+			return err
 		}
 		return nil
 	}

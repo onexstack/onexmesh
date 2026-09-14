@@ -111,12 +111,25 @@ func GinHandler(m Middleware) gin.HandlerFunc {
 	}
 }
 
+// httpStatusErrors precomputes the 4xx/5xx sentinel errors (flyweight pattern)
+// so the hot error-observation path in GinHandler does not allocate per response.
+var httpStatusErrors = func() map[int]error {
+	m := make(map[int]error, 200)
+	for status := http.StatusBadRequest; status < 600; status++ {
+		m[status] = errorsx.New(status, httpStatusReason(status), "HTTP request failed with status %d", status)
+	}
+	return m
+}()
+
 // httpStatusError converts a written gin response status into a protocol-agnostic
 // error so the unified middleware chain can observe HTTP failures. It returns nil
 // for informational, success and redirect statuses.
 func httpStatusError(status int) error {
 	if status < http.StatusBadRequest {
 		return nil
+	}
+	if e, ok := httpStatusErrors[status]; ok {
+		return e
 	}
 	return errorsx.New(status, httpStatusReason(status), "HTTP request failed with status %d", status)
 }

@@ -36,6 +36,11 @@ const StrategyKey = "onexmesh.selector.strategy"
 // adaptive state across picker rebuilds without leaking between services.
 const ServiceKey = "onexmesh.selector.service"
 
+// WeightKey is the resolver address attribute key carrying the node's static
+// weight, so the weighted selector strategy works on the gRPC path (not just
+// HTTP).
+const WeightKey = "onexmesh.selector.weight"
+
 func init() {
 	balancer.Register(base.NewBalancerBuilder(Name, &pickerBuilder{}, base.Config{HealthCheck: false}))
 }
@@ -65,8 +70,12 @@ func (b *pickerBuilder) Build(info base.PickerBuildInfo) balancer.Picker {
 		if s, ok := sci.Address.Attributes.Value(ServiceKey).(string); ok && s != "" {
 			service = s
 		}
+		weight := 100
+		if w, ok := sci.Address.Attributes.Value(WeightKey).(int); ok && w >= 0 {
+			weight = w
+		}
 		addr := sci.Address.Addr
-		nodes = append(nodes, selector.NewNode(addr, "", "", 100, nil))
+		nodes = append(nodes, selector.NewNode(addr, "", "", weight, nil))
 		scByAddr[addr] = sc
 	}
 

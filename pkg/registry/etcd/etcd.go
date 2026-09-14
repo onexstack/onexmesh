@@ -4,13 +4,25 @@
 
 package etcd
 
-import "github.com/onexstack/onexmesh/pkg/registry"
+import (
+	"fmt"
+
+	"github.com/onexstack/onexmesh/pkg/registry"
+)
 
 func init() {
 	registry.RegisterRegistrar("etcd", func(opts any) (registry.Registrar, error) {
-		return NewRegistrar(opts.(Options))
+		o, ok := opts.(Options)
+		if !ok {
+			return nil, fmt.Errorf("etcd: options must be etcd.Options, got %T", opts)
+		}
+		return NewRegistrar(o)
 	})
 	registry.RegisterDiscovery("etcd", func(opts any) (registry.Discovery, error) {
-		return NewDiscovery(opts.(Options))
+		o, ok := opts.(Options)
+		if !ok {
+			return nil, fmt.Errorf("etcd: options must be etcd.Options, got %T", opts)
+		}
+		return NewDiscovery(o)
 	})
 }

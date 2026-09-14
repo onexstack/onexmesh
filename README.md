@@ -8,7 +8,7 @@ OneXMesh 是一个高性能、可扩展的 Go 微服务框架，统一了 gRPC �
 - **统一业务处理器**：`middleware.Handler`（签名与 `grpc.UnaryHandler` 一致）作为唯一业务契约，经 `HTTPHandler`/`GinHandler`/`UnaryServerInterceptor`/`StreamServerInterceptor` 桥，一份业务函数即可同时服务 gRPC 与 HTTP。
 - **协议无关服务声明**：`server.NewMethod[Req, Resp]` 泛型擦除强类型业务函数，`server.Service` 一份声明同时驱动 gRPC（运行时反射注册，无需 `RegisterXxxServer`）与 HTTP 路由。
 - **protobuf IDL 驱动的 HTTP 路由**：方法级 `onexmesh.v1.http` 注解 + `protoc-gen-onexmesh` 插件生成 HTTP 路由（path/query/body 解码），与 gRPC 共用同一业务实现（grpc-gateway 风格）。
-- **HTTP 路由插件化注册**：`server.HTTPRoute` 自描述接口 + `RegisterHTTPRoute` 注册表，业务包 `init()` 自注册，组合根 `app.RunMeshRegistered` 零配置发现装配（与 registry/middleware/codec/selector 注册表同构）。
+- **HTTP 路由插件化 + 流式注册**：`server.HTTPRoute` 自描述接口 + `RegisterHTTPRoute` 注册表，业务包 `init()` 以 Gin 风格的 `server.RouteGroup`（`NewGroup/Group/Use/GET/POST...`）自注册（支持前缀/分组/嵌套/组中间件），组合根 `app.RunMeshRegistered` 零配置发现装配（与 registry/middleware/codec/selector 注册表同构）。
 - **双协议**：gRPC（grpc + protobuf）与 HTTP（gin + JSON / gin + Protobuf）。
 - **可插拔注册中心**：工厂注册表 + `Registrar`/`Discovery` 分离，内置 Polaris、Etcd、Kubernetes、Consul、Nacos、Eureka。
 - **服务发现缓存层**：`registry/cache` 为 `Discovery` 提供 singleflight 去重、服务/节点双 TTL、故障降级（stale-while-error）与刷新限流。
@@ -115,8 +115,8 @@ app.RunMeshWithServices(opts, svc)
 
 生成命令：`make proto`（会 `go install` 两个插件并重新生成）。
 `protoc-gen-onexmesh` 会额外生成 `New<Service>Service(srv)` 工厂，把 `Register<Service>Server`
-（gRPC）与 `Register<Service>HTTPServer`（HTTP）两个固定样板收进生成代码，业务方无需写
-`grpc.ServiceRegistrar` / `*gin.Engine` 闭包。
+（gRPC）与 `<Service>RouteGroups`（HTTP，声明式路由描述符）两个固定样板收进生成代码，业务方无需写
+`grpc.ServiceRegistrar` / 路由装配样板。
 
 > 完整示例见 `examples/helloworld/`（含自定义中间件 `requestID`、HTTP 路由插件化 `healthz`、
 > 手写 path/query 扩展 `/users/:id` 与 `/search`）。`opts.Mesh.Protocol = grpc|http|both` 按需开启。
@@ -146,17 +146,74 @@ group.Add("http", httpSrv)
 _ = group.Start(ctx)
 ```
 
-### HTTP 路由插件化注册
+### 原生 Gin 路由（直接基于 *gin.Engine）
+
+少量纯 HTTP 端点（path/query 参数、无 proto 定义）可直接拿到带统一中间件链的原生 `*gin.Engine`，
+以 Gin 风格注册，无需 `server.NewGroup` / `RegisterHTTPRoute` 与路由名；若同时有 gRPC service，
+用 `app.RunMeshWithEngine` 装配（proto-first 的 gRPC/HTTP 路由仍由 `server.Service` 驱动）：
+
+```go
+opts := options.NewServerOptions()
+opts.Mesh.Protocol = "both"
+opts.Mesh.GRPCAddr = "127.0.0.1:9090"
+opts.Mesh.HTTPAddr = "127.0.0.1:8080"
+opts.Registry.Type = "etcd"
+
+// app.NewEngine 返回注入统一中间件链的原生 *gin.Engine。
+engine, _ := app.NewEngine(opts)
+engine.GET("/healthz", func(c *gin.Context) {
+    codec.Render(c, http.StatusOK, map[string]string{"status": "ok"})
+})
+
+// 原生 gin 分组：组级统一中间件经 middleware.GinHandler 桥接。
+v1 := engine.Group("/v1", middleware.GinHandler(apiVersion("v1")))
+v1.GET("/posts/:postID", handler.GetPost)
+v1.POST("/posts", handler.CreatePost)
+
+svc := proto.NewGreeterService(srv) // 可选：与 gRPC/proto-first 路由共存
+
+a := app.NewApp("server", "my service",
+    app.WithOptions(opts),
+    app.WithRun(app.RunMeshWithEngine(opts, engine, svc)),
+)
+a.Run()
+```
+
+纯 HTTP（无 gRPC）时用 `app.RunMeshHTTP(opts, engine)`。该方式适合少量路由直接注册；
+多业务包插件式自注册场景见下一节 `RegisterHTTPRoute`。
+
+### HTTP 路由插件化注册（流式 RouteGroup）
 
 独立于 `server.Service` 的 HTTP-only 路由模块可通过 `server.RegisterHTTPRoute` 在 `init()`
-自注册，组合根 `app.RunMeshRegistered` 自动发现装配，新增路由模块无需改组合根：
+自注册，组合根 `app.RunMeshRegistered` 自动发现装配，新增路由模块无需改组合根。路由以
+`server.RouteGroup` 流式声明（Gin `RouterGroup` 风格：`NewGroup / Group / Use / GET / POST / ...`），
+但记录的是数据而非命令式改引擎，天然支持前缀、分组、嵌套与组中间件：
 
 ```go
 // 业务包内（可独立成包）：init 自注册，无需组合根显式 import。
 func init() {
-    server.RegisterHTTPRoute("healthz", server.NewRoute("healthz", func(e *gin.Engine) {
-        e.GET("/healthz", func(c *gin.Context) { c.String(http.StatusOK, "ok") })
-    }))
+    // body-based 统一 handler（零 gin 依赖，可复用 gRPC 业务函数）
+    healthz := server.NewGroup("")
+    healthz.HandleBody(http.MethodGet, "/healthz", nil,
+        func(ctx context.Context, _ any) (any, error) {
+            return map[string]string{"status": "ok"}, nil
+        },
+    )
+    server.RegisterHTTPRoute("healthz", healthz)
+
+    // 原生 gin 逃逸口（path/query 参数）：GET /users/:id
+    users := server.NewGroup("")
+    users.GET("/users/:id", func(c *gin.Context) {
+        codec.Render(c, http.StatusOK, userReply{ID: c.Param("id"), Name: users[c.Param("id")]})
+    })
+    server.RegisterHTTPRoute("users", users)
+
+    // 前缀 / 分组 / 嵌套 / 组中间件
+    api := server.NewGroup("/api/v1", apiVersion("v1"))
+    api.GET("/ping", func(c *gin.Context) { c.String(http.StatusOK, "pong") })
+    admin := api.Group("/admin")
+    admin.GET("/stats", handler)
+    server.RegisterHTTPRoute("api", api)
 }
 
 // 组合根：自动发现所有已注册 HTTPRoute 插件（可同时传入显式 server.Service）。
@@ -167,6 +224,10 @@ a := app.NewApp("server", "my service",
 a.Run()
 ```
 
+`server.RouteGroup` 同时满足 `server.HTTPRoute` 接口，故可直接 `RegisterHTTPRoute(name, group)`；
+多条路由在同一组上链式 `.GET(...).POST(...)`，嵌套用 `.Group(prefix, mws...)`，组中间件用
+`NewGroup(prefix, mws...)` 或 `.Use(mws...)`。原生 gin handler 走 `.GET/.POST/.../.Handle`，
+body-based 统一 handler 走 `.HandleBody`（`middleware.HTTPHandler` 桥接，可复用 gRPC 业务函数）。
 该模式与 `registry.RegisterBackend` / `middleware.Register` / `codec.Register` /
 `selector.RegisterSelector` 同构（注册表 + `init()` 自注册 + 按名发现，符合开放/封闭原则）。
 
@@ -181,23 +242,55 @@ resp, _ := grpcClient.SayHello(ctx, &proto.HelloRequest{Name: "world"})
 
 完整示例见 `examples/helloworld/`。
 
-## 服务发现 SDK 生成（fz-clientgen）
+## SDK 生成（protoc-gen-onexmesh-client）
 
-在 fz-clientgen 仓库中，通过 `onexmesh.v1.mesh_service` option 开启服务发现客户端生成：
+onexmesh 内置 `protoc-gen-onexmesh-client` 插件，从**资源型 protobuf IDL** 生成 client-go 风格的
+REST SDK（clientset / typed / fake / informer / lister / applyconfigurations），并内建双协议服务治理。
+它与服务端的 `protoc-gen-onexmesh`（HTTP 路由）互补：前者面向 resource + verbs，后者面向
+service + method，二者互不重叠。
+
+### 资源与聚合锚点
 
 ```proto
-import "proto/onexmesh/v1/onexmesh.proto";
+// examples/apis/apps/v1/deployment.proto
+option (onexmesh.rest.v1.file) = { group: "apps" version: "v1" };
 
-option (onexmesh.v1.mesh_service) = {
-  enable_service_discovery: true
-  service_name: "edu.course.student-api"
-  registry: "polaris"
+message Deployment {
+  option (onexmesh.rest.v1.resource) = {};
+  string apiVersion = 1;
+  string kind = 2;
+  onexmesh.meta.v1.ObjectMeta metadata = 3;
+  DeploymentSpec spec = 4;
+}
+
+// examples/pkg/generated/exampleclient/clientset.proto（聚合锚点）
+option (onexmesh.rest.v1.clientset) = {
+  name: "exampleclient"
+  groups: [ { group: "apps" version: "v1" } ]
 };
 ```
 
-生成的 SDK 默认携带服务名，通过 onexmesh 运行时完成服务发现：
+### 调用方式
 
 ```go
-client, _ := v1.NewDeploymentServiceMeshClient(ctx) // 服务名已固化
-resp, _ := client.GetDeployment(ctx, &v1.GetDeploymentRequest{Name: "d1"})
+// 纯 client-go 风格（fake 内存测试）
+client := fake.NewSimpleClientset(deployment)
+client.AppsV1().Deployments("default").Get(ctx, "d1", metav1.GetOptions{})
+
+// REST mesh-aware：NewForMesh 通过注册中心发现服务并负载均衡
+client, _ := exampleclient.NewForMesh("edu.course.student-api",
+    rest.WithRegistry("etcd", &etcd.Options{Endpoints: []string{"127.0.0.1:2379"}}))
+client.AppsV1().Deployments("default").List(ctx, metav1.ListOptions{})
+
+// gRPC mesh client：mesh_service option 固化服务名，发现由 onexmesh 运行时完成
+option (onexmesh.v1.mesh_service) = {
+  enable_service_discovery: true
+  service_name: "edu.course.student-api"
+  registry: "etcd"
+};
+grpcClient, _ := appsv1.NewDeploymentServiceMeshClient(ctx)
 ```
+
+完整示例见 `examples/apis/apps/v1/`（资源 + gRPC service）与
+`examples/pkg/generated/exampleclient/`（生成的 SDK 树）。
+

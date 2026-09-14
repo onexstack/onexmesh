@@ -4,75 +4,22 @@
 package helloworld
 
 import (
-	"net/http"
-
-	"github.com/gin-gonic/gin"
 	"google.golang.org/grpc"
 
-	"github.com/onexstack/onexmesh/pkg/codec"
 	"github.com/onexstack/onexmesh/pkg/server"
 )
 
-// RegisterGreeterHTTPServer registers the HTTP routes for service Greeter on engine. Each route decodes path/query/body into the request message
-// and calls the same GreeterServer implementation used by gRPC.
-func RegisterGreeterHTTPServer(e *gin.Engine, srv GreeterServer) {
-	e.GET("/helloworld/:name", _Greeter_SayHello0_HTTP_Handler(srv))
-	e.POST("/helloworld", _Greeter_SayHelloPost1_HTTP_Handler(srv))
-}
-
 // NewGreeterService packages the gRPC and HTTP registration for service Greeter into a single server.Service backed by one implementation.
+// Each Method is proto-first: its request/response are protobuf messages and its Handler is the same GreeterServer method used by gRPC.
 func NewGreeterService(srv GreeterServer) server.Service {
 	return server.Service{
 		Name: Greeter_ServiceDesc.ServiceName,
 		Register: func(s grpc.ServiceRegistrar) {
 			RegisterGreeterServer(s, srv)
 		},
-		RegisterHTTP: func(e *gin.Engine) {
-			RegisterGreeterHTTPServer(e, srv)
+		Methods: []server.Method{
+			server.NewMethod("SayHello", "GET", "/helloworld/{name}", "", func() *HelloRequest { return &HelloRequest{} }, srv.SayHello),
+			server.NewMethod("SayHelloPost", "POST", "/helloworld", "*", func() *HelloRequest { return &HelloRequest{} }, srv.SayHelloPost),
 		},
-	}
-}
-
-func _Greeter_SayHello0_HTTP_Handler(srv GreeterServer) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		var in HelloRequest
-		if err := codec.BindPath(c, &in, "/helloworld/{name}"); err != nil {
-			codec.RenderError(c, err)
-			return
-		}
-		if err := codec.BindQuery(c, &in); err != nil {
-			codec.RenderError(c, err)
-			return
-		}
-		out, err := srv.SayHello(c.Request.Context(), &in)
-		if err != nil {
-			codec.RenderError(c, err)
-			return
-		}
-		codec.Render(c, http.StatusOK, out)
-	}
-}
-
-func _Greeter_SayHelloPost1_HTTP_Handler(srv GreeterServer) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		var in HelloRequest
-		if err := codec.BindPath(c, &in, "/helloworld"); err != nil {
-			codec.RenderError(c, err)
-			return
-		}
-		if err := codec.BindQuery(c, &in); err != nil {
-			codec.RenderError(c, err)
-			return
-		}
-		if err := codec.Bind(c, &in); err != nil {
-			codec.RenderError(c, err)
-			return
-		}
-		out, err := srv.SayHelloPost(c.Request.Context(), &in)
-		if err != nil {
-			codec.RenderError(c, err)
-			return
-		}
-		codec.Render(c, http.StatusOK, out)
 	}
 }

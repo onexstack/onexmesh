@@ -19,8 +19,8 @@ func TestRegisterHTTPRoute(t *testing.T) {
 	names := server.HTTPRouteNames()
 	base := len(names)
 
-	server.RegisterHTTPRoute("zroute", server.NewRoute("zroute", func(*gin.Engine) {}))
-	server.RegisterHTTPRoute("aroute", server.NewRoute("aroute", func(*gin.Engine) {}))
+	server.RegisterHTTPRoute("zroute", server.NewGroup(""))
+	server.RegisterHTTPRoute("aroute", server.NewGroup("").SetName("aroute"))
 
 	got := server.HTTPRouteNames()
 	if len(got) != base+2 {
@@ -58,15 +58,19 @@ func TestRegisterHTTPRoute(t *testing.T) {
 	}
 }
 
-// TestHTTPRouteRegisterRoutes verifies a route module registers onto a gin engine.
-func TestHTTPRouteRegisterRoutes(t *testing.T) {
+// TestHTTPRouteRouteGroups verifies a declarative route group assembles onto a
+// gin engine through RouteGroups.
+func TestHTTPRouteRouteGroups(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	engine := gin.New()
 
-	r := server.NewRoute("ping", func(e *gin.Engine) {
-		e.GET("/ping", func(c *gin.Context) { c.String(http.StatusOK, "pong") })
+	r := server.NewGroup("")
+	r.GET("/ping", func(c *gin.Context) {
+		c.String(http.StatusOK, "pong")
 	})
-	r.RegisterRoutes(engine)
+	for _, g := range r.RouteGroups() {
+		g.Apply(&engine.RouterGroup)
+	}
 
 	w := httptest.NewRecorder()
 	req := httptest.NewRequest("GET", "/ping", nil)

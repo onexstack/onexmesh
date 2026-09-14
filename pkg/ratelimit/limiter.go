@@ -88,12 +88,14 @@ func (b *LeakyBucket) Allow() bool {
 	defer b.mu.Unlock()
 
 	now := time.Now()
-	if leaked := int(now.Sub(b.last) / b.interval); leaked > 0 {
-		b.water -= leaked
-		if b.water < 0 {
-			b.water = 0
+	if b.interval > 0 {
+		if leaked := int(now.Sub(b.last) / b.interval); leaked > 0 {
+			b.water -= leaked
+			if b.water < 0 {
+				b.water = 0
+			}
+			b.last = now
 		}
-		b.last = now
 	}
 
 	if b.water >= b.capacity {

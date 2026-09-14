@@ -16,6 +16,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/onexstack/onexstack/pkg/errorsx"
+
 	"github.com/onexstack/onexmesh/pkg/codec"
 	"github.com/onexstack/onexmesh/pkg/registry"
 	"github.com/onexstack/onexmesh/pkg/registry/cache"
@@ -286,7 +288,10 @@ func (c *HTTPClient) do(ctx context.Context, node selector.Node, method, path st
 	defer httpResp.Body.Close()
 
 	if httpResp.StatusCode >= http.StatusBadRequest {
-		return fmt.Errorf("client: unexpected status %d", httpResp.StatusCode)
+		// Return a typed ErrorX carrying the HTTP status so the shared resilience
+		// classifiers (grpcAcceptable/grpcRetryable) can treat HTTP failures by
+		// status code, not just gRPC statuses.
+		return errorsx.New(httpResp.StatusCode, http.StatusText(httpResp.StatusCode), "HTTP request failed with status %d", httpResp.StatusCode)
 	}
 	if resp != nil {
 		data, err := io.ReadAll(httpResp.Body)

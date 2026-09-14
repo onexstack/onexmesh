@@ -1,0 +1,35 @@
+// Copyright 2026 Lingfei Kong <colin404@foxmail.com>. All rights reserved.
+// Use of this source code is governed by a MIT style
+// license that can be found in the LICENSE file.
+
+// DeploymentService demonstrates a gRPC service flagged for onexmesh
+// service-discovery code generation. The file-level onexmesh.v1.mesh_service
+// option turns on generation of zz_generated.mesh.go with a
+// NewDeploymentServiceMeshClient constructor that discovers the service via the
+// registry and dials it through pkg/client.
+syntax = "proto3";
+
+package examples.apps.v1;
+
+import "onexmesh/v1/onexmesh.proto";
+
+option go_package = "github.com/onexstack/onexmesh/examples/apis/apps/v1;appsv1";
+
+option (onexmesh.v1.mesh_service) = {
+  enable_service_discovery: true
+  service_name: "edu.course.student-api"
+  registry: "etcd"
+  protocol: "grpc"
+};
+
+service DeploymentService {
+  rpc Get(GetRequest) returns (GetReply);
+}
+
+message GetRequest {
+  string name = 1;
+}
+
+message GetReply {
+  string message = 1;
+}

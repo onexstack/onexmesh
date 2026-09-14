@@ -1,0 +1,45 @@
+// Copyright 2026 Lingfei Kong <colin404@foxmail.com>. All rights reserved.
+// Use of this source code is governed by a MIT style
+// license that can be found in the LICENSE file.
+
+// Deployment demonstrates a resource-style REST object. The message-level
+// onexmesh.rest.v1.resource option marks it as a REST resource, and the
+// file-level onexmesh.rest.v1.file option supplies the default group/version.
+//
+// NOTE: the conventional top-level fields (apiVersion/kind/metadata) use the
+// camelCase convention so the generated Go json tags match the Kubernetes JSON
+// wire format, mirroring the onexmesh.meta.v1 types.
+syntax = "proto3";
+
+package examples.apps.v1;
+
+import "onexmesh/meta/v1/meta.proto";
+import "onexmesh/rest/v1/rest.proto";
+
+option go_package = "github.com/onexstack/onexmesh/examples/apis/apps/v1;appsv1";
+
+option (onexmesh.rest.v1.file) = { group: "apps" version: "v1" };
+
+message DeploymentSpec {
+  int32 replicas = 1;
+  string image = 2;
+}
+
+message Deployment {
+  option (onexmesh.rest.v1.resource) = {};
+
+  string apiVersion = 1;
+  string kind = 2;
+  onexmesh.meta.v1.ObjectMeta metadata = 3;
+  DeploymentSpec spec = 4;
+  int32 status = 5;
+}
+
+message DeploymentList {
+  option (onexmesh.rest.v1.list) = {};
+
+  string apiVersion = 1;
+  string kind = 2;
+  onexmesh.meta.v1.ListMeta metadata = 3;
+  repeated Deployment items = 4;
+}

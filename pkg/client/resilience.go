@@ -6,11 +6,14 @@ package client
 
 import (
 	"context"
+	"net/http"
 	"time"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+
+	"github.com/onexstack/onexstack/pkg/errorsx"
 
 	"github.com/onexstack/onexmesh/pkg/resilience"
 	"github.com/onexstack/onexmesh/pkg/resiliency"
@@ -81,26 +84,40 @@ func buildResilienceInterceptors(cfg resilienceConfig) []grpc.UnaryClientInterce
 	return ints
 }
 
-// grpcAcceptable classifies a gRPC error as acceptable (not a breaker failure)
-// for everything except the transient/server-side codes that signal an unhealthy
+// grpcAcceptable classifies an error as acceptable (not a breaker failure) for
+// everything except the transient/server-side codes that signal an unhealthy
 // downstream. Client-side errors such as InvalidArgument or NotFound must not
-// trip the circuit.
+// trip the circuit. For non-gRPC (HTTP) errors carrying an errorsx code, it
+// classifies by HTTP status so the HTTP client's 5xx failures still trip the
+// breaker.
 func grpcAcceptable(err error) bool {
 	switch status.Code(err) {
 	case codes.DeadlineExceeded, codes.Internal, codes.Unavailable, codes.DataLoss, codes.Unimplemented:
 		return false
+	case codes.Unknown:
+		// Not a gRPC status error; classify by HTTP status code when present.
+		if code := errorsx.Code(err); code > 0 {
+			return code < http.StatusInternalServerError
+		}
+		return true
 	default:
 		return true
 	}
 }
 
-// grpcRetryable classifies a gRPC error as retryable when it is a transient or
+// grpcRetryable classifies an error as retryable when it is a transient or
 // server-side error. Client-side errors such as InvalidArgument or NotFound are
-// not retried.
+// not retried. For non-gRPC (HTTP) errors carrying an errorsx code, it retries
+// 5xx and 429 (rate-limited) statuses.
 func grpcRetryable(err error) bool {
 	switch status.Code(err) {
 	case codes.DeadlineExceeded, codes.Internal, codes.Unavailable, codes.DataLoss, codes.ResourceExhausted:
 		return true
+	case codes.Unknown:
+		if code := errorsx.Code(err); code > 0 {
+			return code >= http.StatusInternalServerError || code == http.StatusTooManyRequests
+		}
+		return false
 	default:
 		return false
 	}

@@ -7,21 +7,20 @@ package server
 import (
 	"fmt"
 	"sort"
-
-	"github.com/gin-gonic/gin"
 )
 
 // HTTPRoute is a pluggable HTTP route module: it self-describes its name and
-// registers its routes onto a gin.Engine. Business packages call
-// RegisterHTTPRoute from init(); the composition root discovers them via
-// AllHTTPRoutes(), so adding a route module no longer requires touching the
-// composition root (open/closed principle), mirroring registry.Backend and
-// middleware.Register.
+// declares its routes as RouteGroups (declarative data rather than imperative
+// engine mutation). Business packages call RegisterHTTPRoute from init(); the
+// composition root discovers them via AllHTTPRoutes(), so adding a route module
+// no longer requires touching the composition root (open/closed principle),
+// mirroring registry.Backend and middleware.Register. A *RouteGroup satisfies
+// this interface directly, so the usual registration is a single group.
 type HTTPRoute interface {
 	// Name is a stable identifier for the route module.
 	Name() string
-	// RegisterRoutes registers the module's routes on engine.
-	RegisterRoutes(*gin.Engine)
+	// RouteGroups returns the module's declarative route groups.
+	RouteGroups() []*RouteGroup
 }
 
 // httpRoutes maps route names to their modules. Writes happen only from init()
@@ -61,21 +60,4 @@ func AllHTTPRoutes() []HTTPRoute {
 		routes = append(routes, httpRoutes[name])
 	}
 	return routes
-}
-
-// RouteFunc adapts a plain func(*gin.Engine) into an HTTPRoute.
-type RouteFunc struct {
-	name string
-	fn   func(*gin.Engine)
-}
-
-// Name returns the route module's name.
-func (r RouteFunc) Name() string { return r.name }
-
-// RegisterRoutes invokes the wrapped function with the engine.
-func (r RouteFunc) RegisterRoutes(e *gin.Engine) { r.fn(e) }
-
-// NewRoute builds an HTTPRoute from a name and a registration function.
-func NewRoute(name string, fn func(*gin.Engine)) HTTPRoute {
-	return RouteFunc{name: name, fn: fn}
 }

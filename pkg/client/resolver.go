@@ -98,10 +98,11 @@ func (r *meshResolver) watch(ctx context.Context) {
 }
 
 func (r *meshResolver) update(instances []*registry.ServiceInstance) {
-	attrs := attributes.New(balancer.StrategyKey, r.strategy).
-		WithValue(balancer.ServiceKey, r.serviceName)
 	var addrs []resolver.Address
 	for _, inst := range instances {
+		attrs := attributes.New(balancer.StrategyKey, r.strategy).
+			WithValue(balancer.ServiceKey, r.serviceName).
+			WithValue(balancer.WeightKey, metadataWeight(inst.Metadata))
 		for _, ep := range inst.Endpoints {
 			hostport, err := endpointHostPort(ep, grpcScheme)
 			if err != nil {

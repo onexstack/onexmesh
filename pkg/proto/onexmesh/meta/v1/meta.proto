@@ -1,0 +1,55 @@
+// Copyright 2026 Lingfei Kong <colin404@foxmail.com>. All rights reserved.
+// Use of this source code is governed by a MIT style
+// license that can be found in the LICENSE file.
+
+// Package meshmeta defines the runtime metadata types used by generated REST
+// SDK object types. These mirror k8s.io/apimachinery/pkg/apis/meta/v1 but are
+// generated with the modern protoc-gen-go so that generated resource messages
+// can reference them as message fields (the Kubernetes meta types are
+// gogo-protobuf generated and cannot be referenced by modern protoc output).
+//
+// IMPORTANT: field names intentionally use the camelCase convention (rather
+// than the protobuf snake_case convention) so that the generated Go json tags
+// match the Kubernetes JSON wire format. protoc-gen-go emits a json tag equal
+// to the proto field name; snake_case field names would produce snake_case
+// JSON keys, which diverge from client-go.
+syntax = "proto3";
+
+package onexmesh.meta.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/onexstack/onexmesh/pkg/proto/onexmesh/meta/v1;meshmeta";
+
+// TypeMeta carries apiVersion and kind, mirroring metav1.TypeMeta.
+message TypeMeta {
+  string apiVersion = 1;
+  string kind = 2;
+}
+
+// ObjectMeta mirrors metav1.ObjectMeta.
+//
+// ownerReferences and managedFields are intentionally omitted in the first
+// iteration; the generated meta adapter returns empty values for them.
+message ObjectMeta {
+  string name = 1;
+  string generateName = 2;
+  string namespace = 3;
+  string selfLink = 4;
+  string uid = 5;
+  string resourceVersion = 6;
+  int64 generation = 7;
+  google.protobuf.Timestamp creationTimestamp = 8;
+  google.protobuf.Timestamp deletionTimestamp = 9;
+  optional int64 deletionGracePeriodSeconds = 10;
+  map<string, string> labels = 11;
+  map<string, string> annotations = 12;
+  repeated string finalizers = 13;
+}
+
+// ListMeta mirrors metav1.ListMeta.
+message ListMeta {
+  string resourceVersion = 1;
+  string continue = 2;
+  optional int64 remainingItemCount = 3;
+}

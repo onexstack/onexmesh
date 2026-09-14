@@ -25,12 +25,3 @@ func (l *loader) Load(sources ...Source) error {
 	}
 	return l.reader.Merge(kvs...)
 }
-
-// Snapshot returns a point-in-time snapshot of the merged configuration.
-func (l *loader) Snapshot() (*Snapshot, error) {
-	data, err := l.reader.Source()
-	if err != nil {
-		return nil, err
-	}
-	return &Snapshot{data: data}, nil
-}
