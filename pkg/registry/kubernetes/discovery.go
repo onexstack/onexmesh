@@ -82,6 +82,13 @@ func (d *discovery) listOptions(service string) metav1.ListOptions {
 	return metav1.ListOptions{LabelSelector: serviceNameLabel + "=" + service}
 }
 
+// Close releases the underlying Kubernetes client. client-go's Clientset owns
+// no persistent resources beyond its transport, so there is nothing to release
+// here.
+func (d *discovery) Close() error {
+	return nil
+}
+
 func (d *discovery) GetService(ctx context.Context, serviceName string) ([]*registry.ServiceInstance, error) {
 	ref, err := d.resolve(serviceName)
 	if err != nil {

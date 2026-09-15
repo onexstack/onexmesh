@@ -20,7 +20,8 @@ import (
 type Interface interface {
 	Discovery() discovery.DiscoveryInterface
 	AppsV1() appsv1.AppsV1Interface
-	CoreV1() corev1.CoreV1Interface
+	NodeV1() corev1.NodeInterface
+	PodV1(namespace string) corev1.PodInterface
 }
 
 // Clientset contains the clients for groups.
@@ -44,17 +45,32 @@ func (c *Clientset) AppsV1() appsv1.AppsV1Interface {
 	return c.appsV1
 }
 
-func (c *Clientset) CoreV1() corev1.CoreV1Interface {
+func (c *Clientset) NodeV1() corev1.NodeInterface {
 	if c == nil {
 		return nil
 	}
-	return c.coreV1
+	return c.coreV1.Nodes()
+}
+
+func (c *Clientset) PodV1(namespace string) corev1.PodInterface {
+	if c == nil {
+		return nil
+	}
+	return c.coreV1.Pods(namespace)
 }
 
 func NewForConfig(c *rest.Config) (*Clientset, error) {
 	config := *c
 	if config.UserAgent == "" {
 		config.UserAgent = rest.DefaultKubernetesUserAgent()
+	}
+	if serviceName, ok := meshrest.MeshServiceName(config.Host); ok {
+		meshCfg, err := meshrest.NewForMeshConfig(serviceName)
+		if err != nil {
+			return nil, err
+		}
+		config.Host = meshCfg.Host
+		config.WrapTransport = meshCfg.WrapTransport
 	}
 	httpClient, err := rest.HTTPClientFor(&config)
 	if err != nil {

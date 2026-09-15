@@ -393,7 +393,9 @@ func (o *OTelOptions) initLogs(ctx context.Context) error {
 	return nil
 }
 
-// Apply applies the configuration by initializing all three signals.
+// Apply applies the configuration by initializing all three signals. If a later
+// signal fails, any earlier-initialized providers and files are rolled back so a
+// partial initialization does not leak resources.
 func (o *OTelOptions) Apply() error {
 	o.mu.Lock()
 	defer o.mu.Unlock()
@@ -402,39 +404,56 @@ func (o *OTelOptions) Apply() error {
 	defer cancel()
 
 	if err := o.initTraces(ctx); err != nil {
+		o.rollbackLocked(ctx)
 		return fmt.Errorf("failed to initialize traces: %w", err)
 	}
 	if err := o.initMetrics(ctx); err != nil {
+		o.rollbackLocked(ctx)
 		return fmt.Errorf("failed to initialize metrics: %w", err)
 	}
 	if err := o.initLogs(ctx); err != nil {
+		o.rollbackLocked(ctx)
 		return fmt.Errorf("failed to initialize logs: %w", err)
 	}
 
 	return nil
 }
 
+// rollbackLocked shuts down any providers initialized so far and closes files.
+// The caller must hold o.mu.
+func (o *OTelOptions) rollbackLocked(ctx context.Context) {
+	_ = o.shutdownLocked(ctx)
+}
+
 // Shutdown gracefully shuts down all providers and closes files.
 func (o *OTelOptions) Shutdown(ctx context.Context) error {
 	o.mu.Lock()
 	defer o.mu.Unlock()
+	return o.shutdownLocked(ctx)
+}
 
+// shutdownLocked shuts down providers and closes files, clearing them so the
+// shutdown is idempotent (a second call is a no-op). The caller must hold o.mu.
+func (o *OTelOptions) shutdownLocked(ctx context.Context) error {
 	var errs []error
 
 	if o.providers.tracer != nil {
 		if err := o.providers.tracer.Shutdown(ctx); err != nil {
 			errs = append(errs, fmt.Errorf("tracer shutdown: %w", err))
 		}
+		o.providers.tracer = nil
 	}
 	if o.providers.meter != nil {
 		if err := o.providers.meter.Shutdown(ctx); err != nil {
 			errs = append(errs, fmt.Errorf("meter shutdown: %w", err))
 		}
+		o.providers.meter = nil
 	}
 	if o.providers.logger != nil {
 		if err := o.providers.logger.Shutdown(ctx); err != nil {
 			errs = append(errs, fmt.Errorf("logger shutdown: %w", err))
 		}
+		o.providers.logger = nil
 	}
 
 	for _, file := range o.files {
@@ -442,7 +461,7 @@ func (o *OTelOptions) Shutdown(ctx context.Context) error {
 			errs = append(errs, fmt.Errorf("file close: %w", err))
 		}
 	}
-	o.files = o.files[:0]
+	o.files = nil
 
 	if len(errs) > 0 {
 		return fmt.Errorf("shutdown errors: %v", errs)

@@ -46,6 +46,14 @@ func NewForConfig(c *rest.Config) (*Clientset, error) {
 	if config.UserAgent == "" {
 		config.UserAgent = rest.DefaultKubernetesUserAgent()
 	}
+	if serviceName, ok := meshrest.MeshServiceName(config.Host); ok {
+		meshCfg, err := meshrest.NewForMeshConfig(serviceName)
+		if err != nil {
+			return nil, err
+		}
+		config.Host = meshCfg.Host
+		config.WrapTransport = meshCfg.WrapTransport
+	}
 	httpClient, err := rest.HTTPClientFor(&config)
 	if err != nil {
 		return nil, err

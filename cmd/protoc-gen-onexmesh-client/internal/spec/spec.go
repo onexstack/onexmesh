@@ -131,14 +131,31 @@ type Spec struct {
 
 // MeshSpec captures the onexmesh service-discovery option for a file.
 type MeshSpec struct {
-	// Enabled reports whether service discovery is on (enable_service_discovery).
-	Enabled bool
 	// ServiceName is the logical service name, e.g. "edu.course.student-api".
 	ServiceName string
-	// Registry is the backend type: "polaris", "etcd" or "kubernetes".
+	// Registry is the backend type: "polaris", "etcd" or "kubernetes". It is
+	// captured but not applied automatically by the generated client, since it
+	// carries no connection configuration; callers pass an explicit
+	// meshclient.WithRegistry to select the backend (see mesh.Generate).
 	Registry string
-	// Protocol is "grpc" or "http".
-	Protocol string
+}
+
+// HTTPMethodSpec describes the HTTP binding for one RPC method, captured when a
+// mesh_service-flagged service also carries onexmesh.v1.http annotations. It
+// drives the typed HTTP client generated alongside the gRPC mesh client.
+type HTTPMethodSpec struct {
+	// Name is the RPC method Go name, e.g. "SayHello".
+	Name string
+	// Method is the HTTP verb, e.g. "GET".
+	Method string
+	// Path is the HTTP path template, e.g. "/helloworld/{name}".
+	Path string
+	// Body is "*" when the whole request message is the body, "" otherwise.
+	Body string
+	// RequestType is the request message Go type, e.g. "HelloRequest".
+	RequestType string
+	// ResponseType is the response message Go type, e.g. "HelloReply".
+	ResponseType string
 }
 
 // FileMesh describes the mesh client to generate for one gRPC service.
@@ -159,4 +176,7 @@ type FileMesh struct {
 	ProtoDir string
 	// Mesh holds the service-discovery options.
 	Mesh MeshSpec
+	// Methods are the HTTP bindings for this service's methods (from the
+	// onexmesh.v1.http annotations). Empty for pure-gRPC services.
+	Methods []*HTTPMethodSpec
 }

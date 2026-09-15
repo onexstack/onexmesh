@@ -82,7 +82,15 @@ func (o *ServerOptions) Apply() error {
 	return nil
 }
 
-// Shutdown releases the OTel providers and any open output files.
+// Shutdown releases the OTel providers and any open output files (both OTel and
+// plain slog).
 func (o *ServerOptions) Shutdown(ctx context.Context) error {
-	return o.OTel.Shutdown(ctx)
+	var errs []error
+	if err := o.OTel.Shutdown(ctx); err != nil {
+		errs = append(errs, err)
+	}
+	if err := o.Slog.Shutdown(); err != nil {
+		errs = append(errs, err)
+	}
+	return errors.Join(errs...)
 }

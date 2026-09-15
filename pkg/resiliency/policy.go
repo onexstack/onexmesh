@@ -100,10 +100,12 @@ func runRetry[T any](ctx context.Context, rp *RetryPolicy, op func(ctx context.C
 			return result, err
 		}
 
+		timer := time.NewTimer(rp.backoff(attempt))
 		select {
 		case <-ctx.Done():
+			timer.Stop()
 			return result, ctx.Err()
-		case <-time.After(rp.backoff(attempt)):
+		case <-timer.C:
 		}
 	}
 }

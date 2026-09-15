@@ -50,4 +50,8 @@ type Discovery interface {
 	GetService(ctx context.Context, serviceName string) ([]*ServiceInstance, error)
 	// Watch returns a Watcher that streams changes for the service.
 	Watch(ctx context.Context, serviceName string) (Watcher, error)
+	// Close releases the discovery's underlying resources (SDK clients and their
+	// connections). It should be called only after any watchers obtained from
+	// this discovery are stopped.
+	Close() error
 }

@@ -50,6 +50,8 @@ func (m *mockDiscovery) Watch(ctx context.Context, name string) (registry.Watche
 	return nil, errors.New("not implemented")
 }
 
+func (m *mockDiscovery) Close() error { return nil }
+
 func sampleInstances() []*registry.ServiceInstance {
 	return []*registry.ServiceInstance{{ID: "n1", Name: "svc", Endpoints: []string{"grpc://127.0.0.1:9090"}}}
 }

@@ -29,6 +29,94 @@ func BindPath(c *gin.Context, msg proto.Message, template string) error {
 	return nil
 }
 
+// BuildPath substitutes the "{field}" placeholders in template with the string
+// form of the matching scalar fields on msg, returning the concrete URL path.
+// It is the client-side inverse of BindPath: where BindPath decodes a path into
+// the message, BuildPath encodes the message back into the path. An unset field
+// renders as the empty string; an unknown placeholder is left verbatim.
+func BuildPath(template string, msg proto.Message) (string, error) {
+	m := msg.ProtoReflect()
+	var b strings.Builder
+	for i := 0; i < len(template); {
+		if template[i] != '{' {
+			b.WriteByte(template[i])
+			i++
+			continue
+		}
+		end := strings.IndexByte(template[i:], '}')
+		if end < 0 {
+			b.WriteByte(template[i])
+			i++
+			continue
+		}
+		placeholder := template[i+1 : i+end]
+		field := placeholder
+		if eq := strings.IndexByte(placeholder, '='); eq >= 0 {
+			field = placeholder[:eq]
+		}
+		val, err := fieldString(m, field)
+		if err != nil {
+			return "", fmt.Errorf("codec: build path param %q: %w", field, err)
+		}
+		b.WriteString(val)
+		i += end + 1
+	}
+	return b.String(), nil
+}
+
+// fieldString returns the string form of the scalar field named by name (a
+// dotted path into nested messages) on m, mirroring the reverse of
+// populateField. Message-typed and repeated fields are not representable in a
+// path and return an error.
+func fieldString(m protoreflect.Message, name string) (string, error) {
+	parts := strings.Split(name, ".")
+	field := m.Descriptor().Fields().ByName(protoreflect.Name(parts[0]))
+	if field == nil {
+		field = m.Descriptor().Fields().ByJSONName(parts[0])
+	}
+	if field == nil {
+		return "", fmt.Errorf("unknown field %q", parts[0])
+	}
+	if len(parts) > 1 {
+		if field.Kind() != protoreflect.MessageKind {
+			return "", fmt.Errorf("field %s is not a message", parts[0])
+		}
+		return fieldString(m.Get(field).Message(), strings.Join(parts[1:], "."))
+	}
+	if field.IsList() || field.IsMap() {
+		return "", fmt.Errorf("field %s is not a scalar", parts[0])
+	}
+	if !m.Has(field) {
+		return "", nil
+	}
+	return scalarString(field, m.Get(field)), nil
+}
+
+// scalarString formats a scalar field value into its URL-path string form,
+// mirroring the inverse of parseScalar.
+func scalarString(field protoreflect.FieldDescriptor, v protoreflect.Value) string {
+	switch field.Kind() {
+	case protoreflect.EnumKind:
+		return string(field.Enum().Values().ByNumber(v.Enum()).Name())
+	case protoreflect.BoolKind:
+		return strconv.FormatBool(v.Bool())
+	case protoreflect.Int32Kind, protoreflect.Sint32Kind, protoreflect.Sfixed32Kind:
+		return strconv.FormatInt(int64(v.Int()), 10)
+	case protoreflect.Int64Kind, protoreflect.Sint64Kind, protoreflect.Sfixed64Kind:
+		return strconv.FormatInt(v.Int(), 10)
+	case protoreflect.Uint32Kind, protoreflect.Fixed32Kind:
+		return strconv.FormatUint(uint64(v.Uint()), 10)
+	case protoreflect.Uint64Kind, protoreflect.Fixed64Kind:
+		return strconv.FormatUint(v.Uint(), 10)
+	case protoreflect.FloatKind:
+		return strconv.FormatFloat(float64(v.Float()), 'g', -1, 32)
+	case protoreflect.DoubleKind:
+		return strconv.FormatFloat(v.Float(), 'g', -1, 64)
+	default:
+		return v.String()
+	}
+}
+
 // BindQuery populates msg from the URL query parameters. Each query key names a
 // request message field (snake_case or lowerCamelCase); values are coerced to
 // the field's scalar type, enum name, repeated scalar, or a nested message field

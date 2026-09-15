@@ -60,8 +60,9 @@ func WithMinRetryInterval(d time.Duration) Option {
 func WithNow(f func() time.Time) Option { return func(o *Options) { o.Now = f } }
 
 // cache decorates a Discovery with a read-through cache. It embeds the
-// underlying Discovery and overrides GetService, so Watch and any future methods
-// pass through unchanged.
+// underlying Discovery and overrides GetService, so Watch, Close and any future
+// methods pass through unchanged; Close therefore releases the underlying
+// discovery's resources.
 type cache struct {
 	registry.Discovery
 
@@ -96,8 +97,11 @@ func New(d registry.Discovery, opts ...Option) registry.Discovery {
 // GetService returns the cached instances for name, deduplicating concurrent
 // calls and degrading to the last-known snapshot when the registry fails.
 func (c *cache) GetService(ctx context.Context, name string) ([]*registry.ServiceInstance, error) {
+	// WithoutCancel strips the leader's deadline/cancellation so a short-lived or
+	// canceled first caller does not fail the shared fetch for every concurrent
+	// waiter; the fetch still carries the caller's values (trace ids, etc.).
 	v, err, _ := c.sg.Do(name, func() (any, error) {
-		return c.fetch(ctx, name)
+		return c.fetch(context.WithoutCancel(ctx), name)
 	})
 	if err != nil {
 		return nil, err
@@ -109,14 +113,14 @@ func (c *cache) GetService(ctx context.Context, name string) ([]*registry.Servic
 func (c *cache) fetch(ctx context.Context, name string) ([]*registry.ServiceInstance, error) {
 	c.mu.Lock()
 	if c.isValidLocked(name) {
-		insts := cloneInstances(c.cache[name])
+		insts := c.pruneExpiredNodesLocked(name)
 		c.mu.Unlock()
 		return insts, nil
 	}
 	// Throttle refresh attempts: within the retry interval, serve stale data if
 	// we have any, so a cold registry does not get a burst of identical lookups.
 	if c.isThrottledLocked(name) {
-		insts := cloneInstances(c.cache[name])
+		insts := c.pruneExpiredNodesLocked(name)
 		c.mu.Unlock()
 		return insts, nil
 	}
@@ -149,21 +153,38 @@ func (c *cache) fetch(ctx context.Context, name string) ([]*registry.ServiceInst
 }
 
 // isValidLocked reports whether the cached snapshot for name is still fresh at
-// both the service and node level. The caller must hold c.mu.
+// the service level. Node-level freshness is enforced separately when the
+// snapshot is returned (see pruneExpiredNodesLocked), so a short node TTL never
+// forces a whole-service refetch. The caller must hold c.mu.
 func (c *cache) isValidLocked(name string) bool {
-	insts, ok := c.cache[name]
-	if !ok {
+	if _, ok := c.cache[name]; !ok {
 		return false
 	}
 	if exp, ok := c.ttls[name]; !ok || c.opts.Now().After(exp) {
 		return false
 	}
-	for _, inst := range insts {
-		if exp, ok := c.nttls[name][inst.ID]; !ok || c.opts.Now().After(exp) {
-			return false
-		}
-	}
 	return true
+}
+
+// pruneExpiredNodesLocked returns the cached instances with expired nodes
+// removed, also dropping them from the node-TTL map. It returns a deep copy so
+// callers cannot mutate the cached snapshot. The caller must hold c.mu.
+func (c *cache) pruneExpiredNodesLocked(name string) []*registry.ServiceInstance {
+	insts := c.cache[name]
+	nttls := c.nttls[name]
+	if len(nttls) == 0 {
+		return cloneInstances(insts)
+	}
+	now := c.opts.Now()
+	kept := make([]*registry.ServiceInstance, 0, len(insts))
+	for _, inst := range insts {
+		if exp, ok := nttls[inst.ID]; ok && now.After(exp) {
+			delete(nttls, inst.ID)
+			continue
+		}
+		kept = append(kept, inst)
+	}
+	return cloneInstances(kept)
 }
 
 // isThrottledLocked reports whether a refresh attempt should be suppressed in

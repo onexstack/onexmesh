@@ -65,7 +65,9 @@ type RetryMatching struct {
 type CircuitBreaker struct {
 	// MaxRequests is the number of requests allowed in the half-open state.
 	MaxRequests int `json:"maxRequests,omitempty" yaml:"maxRequests,omitempty"`
-	// Interval is the sliding window over which failures are counted.
+	// Interval is reserved for a future sliding-window breaker. The current
+	// breaker trips on a consecutive-failure threshold (see Trip), so this
+	// field is parsed for compatibility but not yet applied.
 	Interval string `json:"interval,omitempty" yaml:"interval,omitempty"`
 	// Timeout is how long the breaker stays open before half-open.
 	Timeout string `json:"timeout,omitempty" yaml:"timeout,omitempty"`

@@ -43,10 +43,19 @@ func (d *discovery) GetService(_ context.Context, serviceName string) ([]*regist
 	return instancesToServiceInstances(serviceName, d.opts.Protocol, instances), nil
 }
 
-func (d *discovery) Watch(_ context.Context, serviceName string) (registry.Watcher, error) {
+// Close releases idle HTTP connections held by the discovery client.
+func (d *discovery) Close() error {
+	d.http.CloseIdleConnections()
+	return nil
+}
+
+func (d *discovery) Watch(ctx context.Context, serviceName string) (registry.Watcher, error) {
+	watchCtx, cancel := context.WithCancel(ctx)
 	return &watcher{
 		discovery:   d,
 		serviceName: serviceName,
+		ctx:         watchCtx,
+		cancel:      cancel,
 		stop:        make(chan struct{}),
 	}, nil
 }
@@ -96,8 +105,10 @@ type watcher struct {
 	discovery   *discovery
 	serviceName string
 
-	stop chan struct{}
-	once sync.Once
+	ctx    context.Context
+	cancel context.CancelFunc
+	stop   chan struct{}
+	once   sync.Once
 }
 
 func (w *watcher) Next() ([]*registry.ServiceInstance, error) {
@@ -107,6 +118,8 @@ func (w *watcher) Next() ([]*registry.ServiceInstance, error) {
 	var last string
 	for {
 		select {
+		case <-w.ctx.Done():
+			return nil, w.ctx.Err()
 		case <-w.stop:
 			return nil, errors.New("eureka: watcher stopped")
 		case <-ticker.C:
@@ -125,7 +138,10 @@ func (w *watcher) Next() ([]*registry.ServiceInstance, error) {
 }
 
 func (w *watcher) Stop() error {
-	w.once.Do(func() { close(w.stop) })
+	w.once.Do(func() {
+		close(w.stop)
+		w.cancel()
+	})
 	return nil
 }
 

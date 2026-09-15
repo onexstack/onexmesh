@@ -5,11 +5,11 @@
 package rest
 
 import (
-	"fmt"
 	"net/http"
 
 	"k8s.io/client-go/rest"
 
+	meshclient "github.com/onexstack/onexmesh/pkg/client"
 	"github.com/onexstack/onexmesh/pkg/registry"
 	"github.com/onexstack/onexmesh/pkg/registry/cache"
 	"github.com/onexstack/onexmesh/pkg/selector"
@@ -57,10 +57,11 @@ func newMeshRoundTripper(serviceName string, opts ...Option) (*meshRoundTripper,
 
 	discovery := o.discovery
 	if discovery == nil {
-		if o.registryName == "" {
-			return nil, fmt.Errorf("rest: registry not configured; use WithRegistry or WithDiscovery")
+		name, ropts := o.registryName, o.registryOpts
+		if name == "" {
+			name, ropts = meshclient.DefaultRegistry()
 		}
-		d, err := registry.CreateDiscovery(o.registryName, o.registryOpts)
+		d, err := registry.CreateDiscovery(name, ropts)
 		if err != nil {
 			return nil, err
 		}

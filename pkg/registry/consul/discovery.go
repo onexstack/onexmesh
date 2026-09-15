@@ -45,11 +45,21 @@ func (d *discovery) GetService(_ context.Context, serviceName string) ([]*regist
 	return entriesToInstances(serviceName, d.opts.Protocol, entries), nil
 }
 
-func (d *discovery) Watch(_ context.Context, serviceName string) (registry.Watcher, error) {
+// Close releases the underlying Consul client. The Consul API client owns its
+// HTTP transport but exposes no explicit Close; idle connections are reclaimed
+// by the transport's idle timeout, so there is nothing to release here.
+func (d *discovery) Close() error {
+	return nil
+}
+
+func (d *discovery) Watch(ctx context.Context, serviceName string) (registry.Watcher, error) {
+	watchCtx, cancel := context.WithCancel(ctx)
 	return &watcher{
 		client:      d.client,
 		serviceName: serviceName,
 		opts:        d.opts,
+		ctx:         watchCtx,
+		cancel:      cancel,
 		stop:        make(chan struct{}),
 	}, nil
 }
@@ -61,8 +71,10 @@ type watcher struct {
 	serviceName string
 	opts        Options
 
-	stop chan struct{}
-	once sync.Once
+	ctx    context.Context
+	cancel context.CancelFunc
+	stop   chan struct{}
+	once   sync.Once
 }
 
 func (w *watcher) Next() ([]*registry.ServiceInstance, error) {
@@ -72,6 +84,8 @@ func (w *watcher) Next() ([]*registry.ServiceInstance, error) {
 	var lastIndex uint64
 	for {
 		select {
+		case <-w.ctx.Done():
+			return nil, w.ctx.Err()
 		case <-w.stop:
 			return nil, errors.New("consul: watcher stopped")
 		case <-ticker.C:
@@ -91,7 +105,10 @@ func (w *watcher) Next() ([]*registry.ServiceInstance, error) {
 }
 
 func (w *watcher) Stop() error {
-	w.once.Do(func() { close(w.stop) })
+	w.once.Do(func() {
+		close(w.stop)
+		w.cancel()
+	})
 	return nil
 }
 

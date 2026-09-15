@@ -44,7 +44,7 @@ const (
 
 // p2cSelector selects nodes by power-of-two-choices over EWMA load.
 type p2cSelector struct {
-	mu    sync.Mutex
+	mu    sync.RWMutex
 	state map[string]*node
 }
 
@@ -120,17 +120,28 @@ func (s *p2cSelector) load(n selector.Node) int64 {
 	return lag * (st.inflight.Load() + 1)
 }
 
-// node returns the per-address state, creating it on first use.
+// node returns the per-address state, creating it on first use. The hot path is
+// a read lock; the write lock is taken only on a map miss, so concurrent Selects
+// are not serialized. The initial last-completion time is stamped here so a
+// node's very first failure does not decay its optimistic success count to zero.
 func (s *p2cSelector) node(addr string) *node {
+	s.mu.RLock()
+	if n, ok := s.state[addr]; ok {
+		s.mu.RUnlock()
+		return n
+	}
+	s.mu.RUnlock()
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	n, ok := s.state[addr]
-	if !ok {
-		n = &node{}
-		n.lag.Store(int64(10 * time.Millisecond))
-		n.success.Store(initSuccess)
-		s.state[addr] = n
+	if n, ok := s.state[addr]; ok {
+		return n
 	}
+	n := &node{}
+	n.lag.Store(int64(10 * time.Millisecond))
+	n.success.Store(initSuccess)
+	n.last.Store(time.Now().UnixNano())
+	s.state[addr] = n
 	return n
 }
 

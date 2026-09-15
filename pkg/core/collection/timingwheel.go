@@ -44,6 +44,7 @@ type TimingWheel struct {
 	removeChannel chan any
 	drainChannel  chan func(key, value any)
 	stopChannel   chan struct{}
+	stopOnce      sync.Once
 }
 
 type timingEntry struct {
@@ -151,9 +152,12 @@ func (tw *TimingWheel) Drain(fn func(key, value any)) error {
 	}
 }
 
-// Stop stops the wheel and its ticker.
+// Stop stops the wheel and its ticker. It is idempotent: repeated calls are
+// safe and only the first one closes the stop channel.
 func (tw *TimingWheel) Stop() {
-	close(tw.stopChannel)
+	tw.stopOnce.Do(func() {
+		close(tw.stopChannel)
+	})
 }
 
 func (tw *TimingWheel) initSlots() {

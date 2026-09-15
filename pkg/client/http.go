@@ -10,8 +10,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -209,11 +209,15 @@ func (c *HTTPClient) watch(ctx context.Context) {
 	}
 }
 
-// Close stops the background watch and releases its resources. It is idempotent.
+// Close stops the background watch and releases its resources (including the
+// underlying discovery). It is idempotent.
 func (c *HTTPClient) Close() {
 	c.closeOnce.Do(func() {
 		if c.cancel != nil {
 			c.cancel()
+		}
+		if c.discovery != nil {
+			_ = c.discovery.Close()
 		}
 	})
 }
@@ -324,15 +328,17 @@ func instancesToNodes(serviceName string, instances []*registry.ServiceInstance)
 }
 
 // parseSchemeHost parses a "scheme://host:port" endpoint into scheme and host:port.
+// A scheme-less endpoint (e.g. "127.0.0.1:8080") is kept as-is, mirroring the
+// rest.RoundTripper so both clients resolve the same node set.
 func parseSchemeHost(endpoint string) (string, string, error) {
-	u, err := url.Parse(endpoint)
-	if err != nil {
-		return "", "", err
+	scheme, rest, ok := strings.Cut(endpoint, "://")
+	if !ok {
+		return "", endpoint, nil
 	}
-	if u.Host == "" {
-		return "", "", fmt.Errorf("endpoint %q has no host", endpoint)
+	if scheme == "" || rest == "" {
+		return "", "", fmt.Errorf("endpoint %q has invalid scheme://host", endpoint)
 	}
-	return u.Scheme, u.Host, nil
+	return scheme, rest, nil
 }
 
 // metadataWeight extracts an integer weight from instance metadata.

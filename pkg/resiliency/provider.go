@@ -31,7 +31,7 @@ type appPolicies struct {
 	retries  map[string]*RetryPolicy
 	breakers map[string]*breakerTemplate
 
-	mu      sync.Mutex
+	mu      sync.RWMutex
 	targets map[string]*EndpointPolicyNames
 	cbCache map[string]CircuitBreakerState
 	cbMax   int
@@ -39,7 +39,6 @@ type appPolicies struct {
 
 type breakerTemplate struct {
 	maxRequests int
-	interval    time.Duration
 	timeout     time.Duration
 }
 
@@ -91,9 +90,9 @@ func (p *provider) EndpointPolicy(app, endpoint string) *PolicyDefinition {
 	if !ok {
 		return nil
 	}
-	ap.mu.Lock()
+	ap.mu.RLock()
 	names, ok := ap.targets[app]
-	ap.mu.Unlock()
+	ap.mu.RUnlock()
 	if !ok {
 		return nil
 	}
@@ -136,13 +135,8 @@ func buildAppPolicies(cfg *Resiliency) (*appPolicies, error) {
 		if err != nil {
 			return nil, fmt.Errorf("resiliency: circuit breaker %q: %w", name, err)
 		}
-		interval, err := parseOptionalDuration(cb.Interval)
-		if err != nil {
-			return nil, fmt.Errorf("resiliency: circuit breaker %q: %w", name, err)
-		}
 		ap.breakers[name] = &breakerTemplate{
 			maxRequests: cb.MaxRequests,
-			interval:    interval,
 			timeout:     timeout,
 		}
 	}
@@ -182,7 +176,6 @@ func (ap *appPolicies) endpointBreaker(endpoint string, tpl *breakerTemplate) Ci
 	}
 	cb := newBreaker(breakerOptions{
 		maxRequests: tpl.maxRequests,
-		interval:    tpl.interval,
 		timeout:     tpl.timeout,
 	})
 	if len(ap.cbCache) < ap.cbMax {

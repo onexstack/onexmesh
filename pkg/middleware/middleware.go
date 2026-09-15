@@ -17,6 +17,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/metadata"
 
+	"github.com/onexstack/onexmesh/pkg/codec"
 	"github.com/onexstack/onexmesh/pkg/core/chain"
 	"github.com/onexstack/onexmesh/pkg/transport"
 	"github.com/onexstack/onexstack/pkg/errorsx"
@@ -94,6 +95,9 @@ func GinHandler(m Middleware) gin.HandlerFunc {
 		c.Request = c.Request.WithContext(ctx)
 
 		next := func(ctx context.Context, _ interface{}) (interface{}, error) {
+			// Propagate the middleware chain's context (carrying any deadline from
+			// Timeout) down to the gin handler, which reads c.Request.Context().
+			c.Request = c.Request.WithContext(ctx)
 			c.Next()
 			// Surface the written HTTP status to the unified middleware chain so
 			// logging/metrics/tracing can observe 4xx/5xx failures, not just gRPC
@@ -101,11 +105,12 @@ func GinHandler(m Middleware) gin.HandlerFunc {
 			return nil, httpStatusError(c.Writer.Status())
 		}
 		if _, err := m(next)(ctx, c); err != nil {
-			// Write a 500 only when the handler did not already produce an error
-			// status; a status-derived error from next must not trigger a second
-			// write.
-			if c.Writer.Status() < http.StatusBadRequest {
-				c.AbortWithError(http.StatusInternalServerError, err)
+			// A middleware that short-circuits before next has not written a
+			// response; render the error with its own status code and JSON envelope
+			// (e.g. Auth 401, RateLimit 429). When next already wrote a status, the
+			// status-derived error must not trigger a second write.
+			if !c.Writer.Written() {
+				codec.RenderError(c, err)
 			}
 		}
 	}

@@ -14,3 +14,9 @@ coverage.out
 .DS_Store
 .idea/
 .vscode/
+
+# polaris-go runtime artifacts (backup/ and log/ written by the SDK at runtime)
+pkg/client/polaris/
+pkg/client/rest/polaris/
+**/polaris/log/
+**/polaris/backup/

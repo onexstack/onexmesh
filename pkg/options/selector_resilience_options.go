@@ -78,7 +78,32 @@ func NewResilienceOptions() *ResilienceOptions {
 }
 
 func (o *ResilienceOptions) Validate() []error {
-	return nil
+	var errs []error
+	if o.MaxAttempts < 0 {
+		errs = append(errs, fmt.Errorf("resilience max-attempts must be >= 0, got %d", o.MaxAttempts))
+	}
+	if o.BaseBackoff < 0 {
+		errs = append(errs, fmt.Errorf("resilience base-backoff must be >= 0, got %v", o.BaseBackoff))
+	}
+	if o.MaxBackoff < 0 {
+		errs = append(errs, fmt.Errorf("resilience max-backoff must be >= 0, got %v", o.MaxBackoff))
+	}
+	if o.MaxBackoff < o.BaseBackoff {
+		errs = append(errs, fmt.Errorf("resilience max-backoff (%v) must be >= base-backoff (%v)", o.MaxBackoff, o.BaseBackoff))
+	}
+	if o.BreakerWindow < 0 {
+		errs = append(errs, fmt.Errorf("resilience breaker-window must be >= 0, got %v", o.BreakerWindow))
+	}
+	if o.BreakerProbeInterval < 0 {
+		errs = append(errs, fmt.Errorf("resilience breaker-probe-interval must be >= 0, got %v", o.BreakerProbeInterval))
+	}
+	if o.Timeout < 0 {
+		errs = append(errs, fmt.Errorf("resilience timeout must be >= 0, got %v", o.Timeout))
+	}
+	if o.Bulkhead < 0 {
+		errs = append(errs, fmt.Errorf("resilience bulkhead must be >= 0, got %d", o.Bulkhead))
+	}
+	return errs
 }
 
 func (o *ResilienceOptions) AddFlags(fs *pflag.FlagSet, prefix string) {

@@ -38,18 +38,13 @@ const (
 
 type MeshService struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// enable_service_discovery is the master switch: when false or unset, no
-	// mesh client code is generated and existing output is unaffected.
-	EnableServiceDiscovery bool `protobuf:"varint,1,opt,name=enable_service_discovery,json=enableServiceDiscovery,proto3" json:"enable_service_discovery,omitempty"`
 	// service_name is the logical service name in the registry, in the form
 	// "{business}.{subdomain-app}.{microservice}", e.g. "edu.course.student-api".
 	// When empty, it is inferred from the proto package.
 	ServiceName string `protobuf:"bytes,2,opt,name=service_name,json=serviceName,proto3" json:"service_name,omitempty"`
 	// registry is the registry backend type: "polaris" (default), "etcd",
 	// "kubernetes", "consul", "nacos" or "eureka".
-	Registry string `protobuf:"bytes,3,opt,name=registry,proto3" json:"registry,omitempty"`
-	// protocol is the transport protocol: "grpc" (default) or "http".
-	Protocol      string `protobuf:"bytes,4,opt,name=protocol,proto3" json:"protocol,omitempty"`
+	Registry      string `protobuf:"bytes,3,opt,name=registry,proto3" json:"registry,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -84,13 +79,6 @@ func (*MeshService) Descriptor() ([]byte, []int) {
 	return file_pkg_proto_onexmesh_v1_onexmesh_proto_rawDescGZIP(), []int{0}
 }
 
-func (x *MeshService) GetEnableServiceDiscovery() bool {
-	if x != nil {
-		return x.EnableServiceDiscovery
-	}
-	return false
-}
-
 func (x *MeshService) GetServiceName() string {
 	if x != nil {
 		return x.ServiceName
@@ -101,13 +89,6 @@ func (x *MeshService) GetServiceName() string {
 func (x *MeshService) GetRegistry() string {
 	if x != nil {
 		return x.Registry
-	}
-	return ""
-}
-
-func (x *MeshService) GetProtocol() string {
-	if x != nil {
-		return x.Protocol
 	}
 	return ""
 }
@@ -133,12 +114,10 @@ var File_pkg_proto_onexmesh_v1_onexmesh_proto protoreflect.FileDescriptor
 
 const file_pkg_proto_onexmesh_v1_onexmesh_proto_rawDesc = "" +
 	"\n" +
-	"$pkg/proto/onexmesh/v1/onexmesh.proto\x12\vonexmesh.v1\x1a google/protobuf/descriptor.proto\"\xa2\x01\n" +
-	"\vMeshService\x128\n" +
-	"\x18enable_service_discovery\x18\x01 \x01(\bR\x16enableServiceDiscovery\x12!\n" +
+	"$pkg/proto/onexmesh/v1/onexmesh.proto\x12\vonexmesh.v1\x1a google/protobuf/descriptor.proto\"L\n" +
+	"\vMeshService\x12!\n" +
 	"\fservice_name\x18\x02 \x01(\tR\vserviceName\x12\x1a\n" +
-	"\bregistry\x18\x03 \x01(\tR\bregistry\x12\x1a\n" +
-	"\bprotocol\x18\x04 \x01(\tR\bprotocol:[\n" +
+	"\bregistry\x18\x03 \x01(\tR\bregistry:[\n" +
 	"\fmesh_service\x12\x1c.google.protobuf.FileOptions\x18چ\x03 \x01(\v2\x18.onexmesh.v1.MeshServiceR\vmeshServiceB@Z>github.com/onexstack/onexmesh/pkg/proto/onexmesh/v1;onexmeshv1b\x06proto3"
 
 var (

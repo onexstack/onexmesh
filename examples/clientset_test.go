@@ -6,6 +6,7 @@ package examples_test
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -16,6 +17,7 @@ import (
 	exampleclient "github.com/onexstack/onexmesh/examples/pkg/generated/exampleclient"
 	applyconfigurationsappsv1 "github.com/onexstack/onexmesh/examples/pkg/generated/exampleclient/applyconfigurations/apps/v1"
 	"github.com/onexstack/onexmesh/examples/pkg/generated/exampleclient/fake"
+	"github.com/onexstack/onexmesh/pkg/client"
 	"github.com/onexstack/onexmesh/pkg/client/rest"
 	meshmeta "github.com/onexstack/onexmesh/pkg/proto/onexmesh/meta/v1"
 	"github.com/onexstack/onexmesh/pkg/registry"
@@ -31,8 +33,18 @@ func (d *staticDiscovery) GetService(ctx context.Context, name string) ([]*regis
 }
 
 func (d *staticDiscovery) Watch(ctx context.Context, name string) (registry.Watcher, error) {
-	return nil, nil
+	return staticWatcher{}, nil
 }
+
+func (d *staticDiscovery) Close() error { return nil }
+
+// staticWatcher is a Watcher that never yields changes: Next returns io.EOF so
+// a client's background watch goroutine seeds its cache from GetService and
+// then exits cleanly.
+type staticWatcher struct{}
+
+func (staticWatcher) Next() ([]*registry.ServiceInstance, error) { return nil, io.EOF }
+func (staticWatcher) Stop() error                                { return nil }
 
 func newDeployment(name, namespace string) *appsv1.Deployment {
 	return &appsv1.Deployment{
@@ -103,5 +115,38 @@ func TestNewForMeshList(t *testing.T) {
 	}
 	if list == nil {
 		t.Fatal("expected a non-nil DeploymentList")
+	}
+}
+
+// TestTypedHTTPClient drives the generated typed HTTP client end-to-end: the
+// discovery resolves the service, the client builds the path from the request
+// message, and decodes the JSON reply into the typed response.
+func TestTypedHTTPClient(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/deployments/d1" {
+			t.Errorf("path = %q, want /deployments/d1", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"message":"hello d1"}`))
+	}))
+	defer srv.Close()
+
+	d := &staticDiscovery{instances: []*registry.ServiceInstance{{
+		ID:        "i1",
+		Name:      "edu.course.student-api",
+		Endpoints: []string{"http://" + srv.Listener.Addr().String()},
+	}}}
+
+	c, err := appsv1.NewDeploymentServiceHTTPClient(context.Background(), client.WithHTTPDiscovery(d))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	resp, err := c.Get(context.Background(), &appsv1.GetRequest{Name: "d1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.GetMessage() != "hello d1" {
+		t.Fatalf("message = %q, want %q", resp.GetMessage(), "hello d1")
 	}
 }

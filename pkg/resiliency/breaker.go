@@ -70,7 +70,6 @@ const defaultBreakerThreshold = 5
 
 type breakerOptions struct {
 	maxRequests int
-	interval    time.Duration
 	timeout     time.Duration
 }
 

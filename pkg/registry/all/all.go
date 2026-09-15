@@ -4,9 +4,9 @@
 
 // Package all blank-imports every built-in registry backend so their init()
 // functions self-register a registry.Backend (and the legacy registrar/discovery
-// factories). The framework composition root (pkg/app) imports this package so
-// all backends are available out of the box; a binary that wants to trim its
-// dependency graph can skip it and blank-import only the backends it needs.
+// factories). A service binary blank-imports this package so all backends are
+// available out of the box; a binary that wants to trim its dependency graph can
+// skip it and blank-import only the backends it needs.
 package all
 
 import (

@@ -32,6 +32,7 @@ func StreamServerInterceptor(m Middleware) grpc.StreamServerInterceptor {
 			transport.NewMetadataHeader(md),
 			transport.NewMetadataHeader(metadata.MD{}),
 		)
+		defer transport.Release(tr)
 		ctx := transport.NewServerContext(ss.Context(), tr)
 		wrapped := &wrappedServerStream{ServerStream: ss, ctx: ctx}
 

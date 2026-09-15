@@ -89,6 +89,11 @@ func (r *registrar) registerOnce(ctx context.Context, inst *registry.ServiceInst
 	}
 
 	r.mu.Lock()
+	// Cancel the previous keepalive context (if any) before replacing it, so a
+	// re-registration after a lease loss does not leak the old context.
+	if r.cancel != nil {
+		r.cancel()
+	}
 	r.leaseID = lease.ID
 	r.cancel = cancel
 	r.registered = true

@@ -82,6 +82,9 @@ func generateFakeClientset(gen *protogen.Plugin, s *spec.Spec) {
 func generateMeshFiles(gen *protogen.Plugin, s *spec.Spec) {
 	for _, fm := range s.Meshes {
 		write(gen, path.Join(fm.ProtoDir, "zz_generated.mesh.go"), fm.GoImportPath, mesh.Generate(fm))
+		if len(fm.Methods) > 0 {
+			write(gen, path.Join(fm.ProtoDir, "zz_generated.httpclient.go"), fm.GoImportPath, mesh.GenerateHTTPClient(fm))
+		}
 	}
 }
 

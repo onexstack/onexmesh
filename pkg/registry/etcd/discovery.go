@@ -73,6 +73,11 @@ func (d *discovery) prefix(serviceName string) string {
 	return path.Join("/onexmesh", ns, serviceName) + "/"
 }
 
+// Close releases the underlying etcd client.
+func (d *discovery) Close() error {
+	return d.client.Close()
+}
+
 // watcher streams instance snapshots for a watched prefix. The first Next does
 // a full prefix Get; subsequent calls apply the watch's incremental PUT/DELETE
 // events against a local snapshot, avoiding a full Get on every change.

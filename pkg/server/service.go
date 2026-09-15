@@ -134,7 +134,9 @@ func ginStylePath(template string) string {
 			continue
 		}
 		end := strings.IndexByte(template[i:], '}')
-		if end < 0 {
+		if end <= 0 {
+			// No closing brace, or an empty "{}" placeholder (end == 0). Emit the
+			// opening brace literally to avoid a panic on an empty field slice.
 			b.WriteByte(template[i])
 			continue
 		}

@@ -52,11 +52,21 @@ func (d *discovery) GetService(_ context.Context, serviceName string) ([]*regist
 	return out, nil
 }
 
-func (d *discovery) Watch(_ context.Context, serviceName string) (registry.Watcher, error) {
+// Close releases the underlying Nacos client. The Nacos naming client exposes
+// no aggregate Close; subscriptions are released per-watcher via Stop, so there
+// is nothing to release here.
+func (d *discovery) Close() error {
+	return nil
+}
+
+func (d *discovery) Watch(ctx context.Context, serviceName string) (registry.Watcher, error) {
+	watchCtx, cancel := context.WithCancel(ctx)
 	w := &watcher{
 		name:   serviceName,
 		opts:   d.opts,
 		client: d.client,
+		ctx:    watchCtx,
+		cancel: cancel,
 		ch:     make(chan []*registry.ServiceInstance, 1),
 		stop:   make(chan struct{}),
 	}
@@ -86,9 +96,11 @@ type watcher struct {
 	client naming_client.INamingClient
 	param  *vo.SubscribeParam
 
-	ch   chan []*registry.ServiceInstance
-	stop chan struct{}
-	once sync.Once
+	ctx    context.Context
+	cancel context.CancelFunc
+	ch     chan []*registry.ServiceInstance
+	stop   chan struct{}
+	once   sync.Once
 }
 
 func (w *watcher) push(services []model.SubscribeService) {
@@ -109,6 +121,8 @@ func (w *watcher) Next() ([]*registry.ServiceInstance, error) {
 	select {
 	case insts := <-w.ch:
 		return insts, nil
+	case <-w.ctx.Done():
+		return nil, w.ctx.Err()
 	case <-w.stop:
 		return nil, errors.New("nacos: watcher stopped")
 	}
@@ -117,6 +131,7 @@ func (w *watcher) Next() ([]*registry.ServiceInstance, error) {
 func (w *watcher) Stop() error {
 	w.once.Do(func() {
 		close(w.stop)
+		w.cancel()
 		if w.param != nil {
 			_ = w.client.Unsubscribe(w.param)
 		}

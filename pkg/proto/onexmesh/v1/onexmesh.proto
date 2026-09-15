@@ -20,15 +20,15 @@ import "google/protobuf/descriptor.proto";
 option go_package = "github.com/onexstack/onexmesh/pkg/proto/onexmesh/v1;onexmeshv1";
 
 // MeshService declares onexmesh service-discovery code generation for a .proto
-// file that defines gRPC services.
+// file that defines gRPC services. Presence of the option is the switch: a file
+// carrying it gets a mesh-aware client; there is no enable/disable boolean.
+// Transport is inferred from the annotations present (gRPC by default, HTTP when
+// a method carries the onexmesh.v1.http rule), so there is no protocol field.
 extend google.protobuf.FileOptions {
   MeshService mesh_service = 50010;
 }
 
 message MeshService {
-  // enable_service_discovery is the master switch: when false or unset, no
-  // mesh client code is generated and existing output is unaffected.
-  bool enable_service_discovery = 1;
   // service_name is the logical service name in the registry, in the form
   // "{business}.{subdomain-app}.{microservice}", e.g. "edu.course.student-api".
   // When empty, it is inferred from the proto package.
@@ -36,6 +36,4 @@ message MeshService {
   // registry is the registry backend type: "polaris" (default), "etcd",
   // "kubernetes", "consul", "nacos" or "eureka".
   string registry = 3;
-  // protocol is the transport protocol: "grpc" (default) or "http".
-  string protocol = 4;
 }

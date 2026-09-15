@@ -77,6 +77,9 @@ func (r *meshResolver) watch(ctx context.Context) {
 			}
 			if backoff < maxResolveBackoff {
 				backoff *= 2
+				if backoff > maxResolveBackoff {
+					backoff = maxResolveBackoff
+				}
 			}
 		}
 	}
@@ -129,6 +132,9 @@ func (r *meshResolver) ResolveNow(resolver.ResolveNowOptions) {}
 func (r *meshResolver) Close() {
 	if r.cancel != nil {
 		r.cancel()
+	}
+	if r.discovery != nil {
+		_ = r.discovery.Close()
 	}
 }
 

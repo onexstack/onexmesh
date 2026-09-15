@@ -22,14 +22,19 @@ func NewLessExecutor(threshold time.Duration) *LessExecutor {
 }
 
 // DoOrDiscard runs fn if threshold has elapsed since the last execution, and
-// discards it otherwise. It reports whether fn ran.
+// discards it otherwise. It reports whether fn ran. The last-execution time is
+// updated with a compare-and-swap so concurrent callers within a threshold
+// window still execute at most once.
 func (le *LessExecutor) DoOrDiscard(fn func()) bool {
 	now := time.Duration(time.Now().UnixNano())
-	lastTime := le.lastTime.Load()
-	if lastTime == 0 || lastTime+le.threshold < now {
-		le.lastTime.Set(now)
-		fn()
-		return true
+	for {
+		lastTime := le.lastTime.Load()
+		if lastTime != 0 && lastTime+le.threshold >= now {
+			return false
+		}
+		if le.lastTime.CompareAndSwap(lastTime, now) {
+			fn()
+			return true
+		}
 	}
-	return false
 }

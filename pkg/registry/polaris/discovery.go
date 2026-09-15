@@ -54,6 +54,14 @@ func (d *discovery) GetService(ctx context.Context, serviceName string) ([]*regi
 	return out, nil
 }
 
+// Close destroys the underlying Polaris consumer API. The consumer is shared by
+// all watchers from this discovery, so Close must be called only after those
+// watchers are stopped.
+func (d *discovery) Close() error {
+	d.consumer.Destroy()
+	return nil
+}
+
 func (d *discovery) Watch(ctx context.Context, serviceName string) (registry.Watcher, error) {
 	resp, err := d.consumer.WatchService(&api.WatchServiceRequest{
 		WatchServiceRequest: model.WatchServiceRequest{
@@ -63,7 +71,8 @@ func (d *discovery) Watch(ctx context.Context, serviceName string) (registry.Wat
 	if err != nil {
 		return nil, fmt.Errorf("polaris: watch service: %w", err)
 	}
-	return newWatcher(serviceName, d.consumer, resp), nil
+	watchCtx, cancel := context.WithCancel(ctx)
+	return newWatcher(serviceName, d.consumer, resp, watchCtx, cancel), nil
 }
 
 // toServiceInstance converts a polaris Instance into a registry.ServiceInstance.
@@ -90,14 +99,26 @@ type watcher struct {
 	consumer api.ConsumerAPI
 	resp     *model.WatchServiceResponse
 
+	ctx    context.Context
+	cancel context.CancelFunc
+	stop   chan struct{}
+
 	mu      sync.Mutex
 	current []*registry.ServiceInstance
 	init    bool
 	once    sync.Once
 }
 
-func newWatcher(name string, consumer api.ConsumerAPI, resp *model.WatchServiceResponse) *watcher {
-	return &watcher{name: name, consumer: consumer, resp: resp}
+func newWatcher(name string, consumer api.ConsumerAPI, resp *model.WatchServiceResponse,
+	ctx context.Context, cancel context.CancelFunc) *watcher {
+	return &watcher{
+		name:     name,
+		consumer: consumer,
+		resp:     resp,
+		ctx:      ctx,
+		cancel:   cancel,
+		stop:     make(chan struct{}),
+	}
 }
 
 func (w *watcher) Next() ([]*registry.ServiceInstance, error) {
@@ -110,16 +131,28 @@ func (w *watcher) Next() ([]*registry.ServiceInstance, error) {
 		return clone(w.current), nil
 	}
 
-	event, ok := <-w.resp.EventChannel
-	if !ok {
-		return nil, errors.New("polaris: watch channel closed")
+	select {
+	case event, ok := <-w.resp.EventChannel:
+		if !ok {
+			return nil, errors.New("polaris: watch channel closed")
+		}
+		w.applyEvent(event)
+		return clone(w.current), nil
+	case <-w.ctx.Done():
+		return nil, w.ctx.Err()
+	case <-w.stop:
+		return nil, errors.New("polaris: watcher stopped")
 	}
-	w.applyEvent(event)
-	return clone(w.current), nil
 }
 
+// Stop terminates the watcher's subscription. The consumer is shared by all
+// watchers from the same discovery, so it is NOT destroyed here; its lifecycle
+// is owned by discovery.Close.
 func (w *watcher) Stop() error {
-	w.once.Do(func() { w.consumer.Destroy() })
+	w.once.Do(func() {
+		close(w.stop)
+		w.cancel()
+	})
 	return nil
 }
 

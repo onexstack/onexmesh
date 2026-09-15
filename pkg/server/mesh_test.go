@@ -2,7 +2,7 @@
 // Use of this source code is governed by a MIT style
 // license that can be found in the LICENSE file.
 
-package app_test
+package server_test
 
 import (
 	"context"
@@ -18,7 +18,6 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 
 	proto "github.com/onexstack/onexmesh/examples/helloworld/proto"
-	"github.com/onexstack/onexmesh/pkg/app"
 	"github.com/onexstack/onexmesh/pkg/middleware"
 	"github.com/onexstack/onexmesh/pkg/options"
 	"github.com/onexstack/onexmesh/pkg/server"
@@ -37,9 +36,9 @@ func freeAddr(t *testing.T) string {
 	return addr
 }
 
-// TestRunMeshStartAndStop verifies the composition root starts the HTTP+gRPC
+// TestMeshServerStartAndStop verifies the composition root starts the HTTP+gRPC
 // servers, serves a request, and gracefully stops on context cancellation.
-func TestRunMeshStartAndStop(t *testing.T) {
+func TestMeshServerStartAndStop(t *testing.T) {
 	grpcAddr := freeAddr(t)
 	httpAddr := freeAddr(t)
 
@@ -50,19 +49,23 @@ func TestRunMeshStartAndStop(t *testing.T) {
 	opts.Mesh.HTTPAddr = httpAddr
 	opts.Registry.Type = "none"
 
-	engine, err := app.NewEngine(opts)
+	engine, err := server.NewGinEngine(opts)
 	if err != nil {
-		t.Fatalf("NewEngine: %v", err)
+		t.Fatalf("NewGinEngine: %v", err)
 	}
 	engine.GET("/healthz", func(c *gin.Context) {
 		c.String(http.StatusOK, "ok")
 	})
 
-	run := app.RunMesh(opts, func(s grpc.ServiceRegistrar) {}, engine)
+	mesh := server.NewMeshServer(
+		opts,
+		server.WithGRPCRegister(func(s grpc.ServiceRegistrar) {}),
+		server.WithGinEngine(engine),
+	)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() { done <- run(ctx) }()
+	go func() { done <- mesh.Run(ctx) }()
 
 	// Poll the HTTP endpoint until the server is up.
 	deadline := time.Now().Add(5 * time.Second)
@@ -84,16 +87,16 @@ func TestRunMeshStartAndStop(t *testing.T) {
 	select {
 	case err := <-done:
 		if err != nil {
-			t.Fatalf("RunMesh returned error: %v", err)
+			t.Fatalf("MeshServer.Run returned error: %v", err)
 		}
 	case <-time.After(5 * time.Second):
-		t.Fatal("RunMesh did not return after cancellation")
+		t.Fatal("MeshServer.Run did not return after cancellation")
 	}
 }
 
-// TestRunMeshWithServices verifies that a proto-first Method serves HTTP (body
+// TestMeshServerWithServices verifies that a proto-first Method serves HTTP (body
 // binding) and the RouteGroups extension point registers HTTP-only routes.
-func TestRunMeshWithServices(t *testing.T) {
+func TestMeshServerWithServices(t *testing.T) {
 	grpcAddr := freeAddr(t)
 	httpAddr := freeAddr(t)
 
@@ -104,8 +107,10 @@ func TestRunMeshWithServices(t *testing.T) {
 	opts.Mesh.HTTPAddr = httpAddr
 	opts.Registry.Type = "none"
 
-	svc := server.NewService("helloworld.Greeter",
-		server.NewMethod("SayHello", "POST", "/hello", "*",
+	svc := server.NewService(
+		"helloworld.Greeter",
+		server.NewMethod(
+			"SayHello", "POST", "/hello", "*",
 			func() *proto.HelloRequest { return &proto.HelloRequest{} },
 			func(_ context.Context, r *proto.HelloRequest) (*proto.HelloReply, error) {
 				return &proto.HelloReply{Message: "Hello " + r.GetName()}, nil
@@ -116,11 +121,11 @@ func TestRunMeshWithServices(t *testing.T) {
 		server.NewGroup("").GET("/ping", func(c *gin.Context) { c.String(http.StatusOK, "pong") }),
 	}
 
-	run := app.RunMeshWithServices(opts, svc)
+	mesh := server.NewMeshServer(opts, server.WithService(svc))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() { done <- run(ctx) }()
+	go func() { done <- mesh.Run(ctx) }()
 
 	// Poll the body endpoint until the server is up, then POST a body.
 	deadline := time.Now().Add(5 * time.Second)
@@ -164,17 +169,17 @@ func TestRunMeshWithServices(t *testing.T) {
 	select {
 	case err := <-done:
 		if err != nil {
-			t.Fatalf("RunMeshWithServices returned error: %v", err)
+			t.Fatalf("MeshServer.Run returned error: %v", err)
 		}
 	case <-time.After(5 * time.Second):
-		t.Fatal("RunMeshWithServices did not return after cancellation")
+		t.Fatal("MeshServer.Run did not return after cancellation")
 	}
 }
 
-// TestRunMeshWithEngine verifies the native-gin path: an engine built via
-// app.NewEngine carries native gin routes alongside a proto-first service
-// registered through RunMeshWithEngine.
-func TestRunMeshWithEngine(t *testing.T) {
+// TestMeshServerWithEngine verifies the native-gin path: an engine built via
+// server.NewGinEngine carries native gin routes alongside a proto-first service
+// registered through WithGinEngine + WithService.
+func TestMeshServerWithEngine(t *testing.T) {
 	grpcAddr := freeAddr(t)
 	httpAddr := freeAddr(t)
 
@@ -185,9 +190,9 @@ func TestRunMeshWithEngine(t *testing.T) {
 	opts.Mesh.HTTPAddr = httpAddr
 	opts.Registry.Type = "none"
 
-	engine, err := app.NewEngine(opts)
+	engine, err := server.NewGinEngine(opts)
 	if err != nil {
-		t.Fatalf("NewEngine: %v", err)
+		t.Fatalf("NewGinEngine: %v", err)
 	}
 	engine.GET("/native", func(c *gin.Context) {
 		c.String(http.StatusOK, "native")
@@ -196,10 +201,10 @@ func TestRunMeshWithEngine(t *testing.T) {
 	srv := &greeterImpl{}
 	svc := proto.NewGreeterService(srv)
 
-	run := app.RunMeshWithEngine(opts, engine, svc)
+	mesh := server.NewMeshServer(opts, server.WithGinEngine(engine), server.WithService(svc))
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() { done <- run(ctx) }()
+	go func() { done <- mesh.Run(ctx) }()
 
 	// Poll the native gin route until the server is up.
 	deadline := time.Now().Add(5 * time.Second)
@@ -240,21 +245,22 @@ func TestRunMeshWithEngine(t *testing.T) {
 	select {
 	case err := <-done:
 		if err != nil {
-			t.Fatalf("RunMeshWithEngine returned error: %v", err)
+			t.Fatalf("MeshServer.Run returned error: %v", err)
 		}
 	case <-time.After(5 * time.Second):
-		t.Fatal("RunMeshWithEngine did not return after cancellation")
+		t.Fatal("MeshServer.Run did not return after cancellation")
 	}
 }
 
-// TestRunMeshRegistered verifies the plugin-style HTTP route registration: a
+// TestMeshServerRegistered verifies the plugin-style HTTP route registration: a
 // route module self-registered via server.RegisterHTTPRoute is auto-discovered
-// and served by RunMeshRegistered without being passed explicitly.
-func TestRunMeshRegistered(t *testing.T) {
+// and served by WithRoute(AllHTTPRoutes()) without being passed explicitly.
+func TestMeshServerRegistered(t *testing.T) {
 	httpAddr := freeAddr(t)
 
 	// Simulate a business package self-registering its HTTP route in init().
-	server.RegisterHTTPRoute("registered-healthz",
+	server.RegisterHTTPRoute(
+		"registered-healthz",
 		server.NewGroup("").GET("/healthz", func(c *gin.Context) { c.String(http.StatusOK, "ok") }),
 	)
 
@@ -264,11 +270,11 @@ func TestRunMeshRegistered(t *testing.T) {
 	opts.Mesh.HTTPAddr = httpAddr
 	opts.Registry.Type = "none"
 
-	run := app.RunMeshRegistered(opts)
+	mesh := server.NewMeshServer(opts, server.WithRoute(server.AllHTTPRoutes()...))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() { done <- run(ctx) }()
+	go func() { done <- mesh.Run(ctx) }()
 
 	deadline := time.Now().Add(5 * time.Second)
 	var resp *http.Response
@@ -294,10 +300,10 @@ func TestRunMeshRegistered(t *testing.T) {
 	select {
 	case err := <-done:
 		if err != nil {
-			t.Fatalf("RunMeshRegistered returned error: %v", err)
+			t.Fatalf("MeshServer.Run returned error: %v", err)
 		}
 	case <-time.After(5 * time.Second):
-		t.Fatal("RunMeshRegistered did not return after cancellation")
+		t.Fatal("MeshServer.Run did not return after cancellation")
 	}
 }
 
@@ -316,7 +322,7 @@ func (g *greeterImpl) SayHelloPost(_ context.Context, req *proto.HelloRequest) (
 }
 
 // TestNewEngineAppliesMiddleware verifies the timing fix: a route-level
-// middleware bound via MiddlewareRoutes is injected by NewEngine before any
+// middleware bound via MiddlewareRoutes is injected by NewGinEngine before any
 // route is registered, so it actually runs on the route (and writes the header).
 func TestNewEngineAppliesMiddleware(t *testing.T) {
 	httpAddr := freeAddr(t)
@@ -339,18 +345,18 @@ func TestNewEngineAppliesMiddleware(t *testing.T) {
 	opts.Registry.Type = "none"
 	opts.Mesh.MiddlewareRoutes = []string{"*=test-header"}
 
-	engine, err := app.NewEngine(opts)
+	engine, err := server.NewGinEngine(opts)
 	if err != nil {
-		t.Fatalf("NewEngine: %v", err)
+		t.Fatalf("NewGinEngine: %v", err)
 	}
 	engine.GET("/healthz", func(c *gin.Context) {
 		c.String(http.StatusOK, "ok")
 	})
 
-	run := app.RunMeshHTTP(opts, engine)
+	mesh := server.NewMeshServer(opts, server.WithGinEngine(engine))
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() { done <- run(ctx) }()
+	go func() { done <- mesh.Run(ctx) }()
 
 	deadline := time.Now().Add(5 * time.Second)
 	var resp *http.Response
@@ -376,31 +382,31 @@ func TestNewEngineAppliesMiddleware(t *testing.T) {
 	select {
 	case err := <-done:
 		if err != nil {
-			t.Fatalf("RunMeshHTTP returned error: %v", err)
+			t.Fatalf("MeshServer.Run returned error: %v", err)
 		}
 	case <-time.After(5 * time.Second):
-		t.Fatal("RunMeshHTTP did not return after cancellation")
+		t.Fatal("MeshServer.Run did not return after cancellation")
 	}
 }
 
-// TestRunMeshRejectsRawEngine verifies the guard: a raw gin.New() engine passed
-// to RunMesh is rejected instead of silently bypassing the middleware chain.
-func TestRunMeshRejectsRawEngine(t *testing.T) {
+// TestMeshServerRejectsRawEngine verifies the guard: a raw gin.New() engine passed
+// to MeshServer is rejected instead of silently bypassing the middleware chain.
+func TestMeshServerRejectsRawEngine(t *testing.T) {
 	opts := options.NewServerOptions()
 	opts.Mesh.ServiceName = "test"
 	opts.Mesh.Protocol = "http"
 	opts.Mesh.HTTPAddr = freeAddr(t)
 	opts.Registry.Type = "none"
 
-	run := app.RunMesh(opts, nil, gin.New())
-	if err := run(context.Background()); err == nil {
+	mesh := server.NewMeshServer(opts, server.WithGinEngine(gin.New()))
+	if err := mesh.Run(context.Background()); err == nil {
 		t.Fatal("expected error for raw gin.New() engine, got nil")
 	}
 }
 
-// TestRunMeshGRPC verifies the gRPC-only entry point serves a registered service
-// without a gin engine.
-func TestRunMeshGRPC(t *testing.T) {
+// TestMeshServerGRPC verifies the gRPC-only entry point serves a registered
+// service without a gin engine.
+func TestMeshServerGRPC(t *testing.T) {
 	grpcAddr := freeAddr(t)
 
 	opts := options.NewServerOptions()
@@ -410,13 +416,13 @@ func TestRunMeshGRPC(t *testing.T) {
 	opts.Registry.Type = "none"
 
 	srv := &greeterImpl{}
-	run := app.RunMeshGRPC(opts, func(s grpc.ServiceRegistrar) {
+	mesh := server.NewMeshServer(opts, server.WithGRPCRegister(func(s grpc.ServiceRegistrar) {
 		proto.RegisterGreeterServer(s, srv)
-	})
+	}))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() { done <- run(ctx) }()
+	go func() { done <- mesh.Run(ctx) }()
 
 	conn, err := grpc.NewClient(grpcAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
@@ -448,16 +454,16 @@ func TestRunMeshGRPC(t *testing.T) {
 	select {
 	case err := <-done:
 		if err != nil {
-			t.Fatalf("RunMeshGRPC returned error: %v", err)
+			t.Fatalf("MeshServer.Run returned error: %v", err)
 		}
 	case <-time.After(5 * time.Second):
-		t.Fatal("RunMeshGRPC did not return after cancellation")
+		t.Fatal("MeshServer.Run did not return after cancellation")
 	}
 }
 
-// TestRunMeshHTTP verifies the HTTP-only entry point serves gin routes without a
-// gRPC server.
-func TestRunMeshHTTP(t *testing.T) {
+// TestMeshServerHTTP verifies the HTTP-only entry point serves gin routes without
+// a gRPC server.
+func TestMeshServerHTTP(t *testing.T) {
 	httpAddr := freeAddr(t)
 
 	opts := options.NewServerOptions()
@@ -466,18 +472,18 @@ func TestRunMeshHTTP(t *testing.T) {
 	opts.Mesh.HTTPAddr = httpAddr
 	opts.Registry.Type = "none"
 
-	engine, err := app.NewEngine(opts)
+	engine, err := server.NewGinEngine(opts)
 	if err != nil {
-		t.Fatalf("NewEngine: %v", err)
+		t.Fatalf("NewGinEngine: %v", err)
 	}
 	engine.GET("/healthz", func(c *gin.Context) {
 		c.String(http.StatusOK, "ok")
 	})
 
-	run := app.RunMeshHTTP(opts, engine)
+	mesh := server.NewMeshServer(opts, server.WithGinEngine(engine))
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() { done <- run(ctx) }()
+	go func() { done <- mesh.Run(ctx) }()
 
 	deadline := time.Now().Add(5 * time.Second)
 	for {
@@ -497,10 +503,10 @@ func TestRunMeshHTTP(t *testing.T) {
 	select {
 	case err := <-done:
 		if err != nil {
-			t.Fatalf("RunMeshHTTP returned error: %v", err)
+			t.Fatalf("MeshServer.Run returned error: %v", err)
 		}
 	case <-time.After(5 * time.Second):
-		t.Fatal("RunMeshHTTP did not return after cancellation")
+		t.Fatal("MeshServer.Run did not return after cancellation")
 	}
 }
 
@@ -522,10 +528,10 @@ func TestGeneratedHTTPRoute(t *testing.T) {
 	srv := &greeterImpl{}
 	svc := proto.NewGreeterService(srv)
 
-	run := app.RunMeshWithServices(opts, svc)
+	mesh := server.NewMeshServer(opts, server.WithService(svc))
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() { done <- run(ctx) }()
+	go func() { done <- mesh.Run(ctx) }()
 
 	// Wait for the server to come up, then exercise both generated routes.
 	deadline := time.Now().Add(5 * time.Second)
@@ -569,9 +575,9 @@ func TestGeneratedHTTPRoute(t *testing.T) {
 	select {
 	case err := <-done:
 		if err != nil {
-			t.Fatalf("RunMeshWithServices returned error: %v", err)
+			t.Fatalf("MeshServer.Run returned error: %v", err)
 		}
 	case <-time.After(5 * time.Second):
-		t.Fatal("RunMeshWithServices did not return after cancellation")
+		t.Fatal("MeshServer.Run did not return after cancellation")
 	}
 }

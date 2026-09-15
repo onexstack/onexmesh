@@ -26,7 +26,6 @@ type registrar struct {
 	checkID   string
 	serviceID string
 	stop      chan struct{}
-	once      sync.Once
 }
 
 // NewRegistrar creates a Consul Registrar.
@@ -68,22 +67,25 @@ func (r *registrar) Register(_ context.Context, inst *registry.ServiceInstance) 
 	}
 
 	r.mu.Lock()
+	// Stop any previous heartbeat before replacing it, so re-registering does not
+	// leak the old heartbeat goroutine holding a stale stop channel.
+	if r.stop != nil {
+		close(r.stop)
+	}
 	r.serviceID = serviceID
 	r.checkID = checkID
 	r.stop = make(chan struct{})
+	stop := r.stop
 	r.mu.Unlock()
 
-	go r.heartbeat()
+	go r.heartbeat(stop, checkID)
 	return nil
 }
 
-// heartbeat periodically passes the TTL check to keep the instance alive.
-func (r *registrar) heartbeat() {
-	r.mu.Lock()
-	stop := r.stop
-	checkID := r.checkID
-	r.mu.Unlock()
-
+// heartbeat periodically passes the TTL check to keep the instance alive. It
+// takes its stop channel and check ID as arguments so a later re-register does
+// not disturb this goroutine's lifecycle.
+func (r *registrar) heartbeat(stop chan struct{}, checkID string) {
 	interval := ttl(r.opts) / 2
 	if interval <= 0 {
 		interval = time.Second
@@ -114,7 +116,8 @@ func (r *registrar) Deregister(_ context.Context, inst *registry.ServiceInstance
 		return nil
 	}
 	serviceID := r.serviceID
-	r.once.Do(func() { close(r.stop) })
+	close(r.stop)
+	r.stop = nil
 	r.mu.Unlock()
 
 	if err := r.client.Agent().ServiceDeregister(serviceID); err != nil {

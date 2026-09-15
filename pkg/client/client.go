@@ -6,7 +6,7 @@ package client
 
 import (
 	"context"
-	"fmt"
+	"net"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
@@ -26,16 +26,25 @@ func Dial(ctx context.Context, serviceName string, opts ...DialOption) (*grpc.Cl
 		opt(o)
 	}
 
+	common := commonDialOpts(o, serviceName)
+
+	// A host:port target is dialed directly through grpc's built-in passthrough
+	// resolver; only logical service names go through onexmesh discovery.
+	if isHostPort(serviceName) {
+		return grpc.NewClient(serviceName, common...)
+	}
+
 	if o.strategy == "" {
 		o.strategy = "round_robin"
 	}
 
 	discovery := o.discovery
 	if discovery == nil {
-		if o.registryName == "" {
-			return nil, fmt.Errorf("client: registry not configured; use WithRegistry or WithDiscovery")
+		name, ropts := o.registryName, o.registryOpts
+		if name == "" {
+			name, ropts = DefaultRegistry()
 		}
-		d, err := registry.CreateDiscovery(o.registryName, o.registryOpts)
+		d, err := registry.CreateDiscovery(name, ropts)
 		if err != nil {
 			return nil, err
 		}
@@ -52,11 +61,30 @@ func Dial(ctx context.Context, serviceName string, opts ...DialOption) (*grpc.Cl
 		// Balance across all discovered instances using the framework selector.
 		grpc.WithDefaultServiceConfig(`{"loadBalancingConfig":[{"` + balancer.Name + `":{}}]}`),
 	}
+	dialOpts = append(dialOpts, common...)
+
+	return grpc.NewClient(Scheme+":///"+serviceName, dialOpts...)
+}
+
+// isHostPort reports whether target looks like a host:port dial target
+// (including IPv6 "[::1]:8080"). A bare host with no port is treated as a
+// service name.
+func isHostPort(target string) bool {
+	_, _, err := net.SplitHostPort(target)
+	return err == nil
+}
+
+// commonDialOpts builds the dial options shared by the direct and discovery
+// branches: TLS (insecure default), resilience/user interceptors, and raw grpc
+// options.
+func commonDialOpts(o *dialOptions, serviceName string) []grpc.DialOption {
+	opts := []grpc.DialOption{}
 	if o.tls != nil {
-		dialOpts = append(dialOpts, grpc.WithTransportCredentials(credentials.NewTLS(o.tls)))
+		opts = append(opts, grpc.WithTransportCredentials(credentials.NewTLS(o.tls)))
 	} else {
-		dialOpts = append(dialOpts, grpc.WithTransportCredentials(insecure.NewCredentials()))
+		opts = append(opts, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	}
+
 	var unaryInts []grpc.UnaryClientInterceptor
 	if o.resiliency != nil {
 		// Declarative resilience takes precedence over the imperative options.
@@ -66,9 +94,8 @@ func Dial(ctx context.Context, serviceName string, opts ...DialOption) (*grpc.Cl
 	}
 	unaryInts = append(unaryInts, o.unaryInts...)
 	if len(unaryInts) > 0 {
-		dialOpts = append(dialOpts, grpc.WithChainUnaryInterceptor(unaryInts...))
+		opts = append(opts, grpc.WithChainUnaryInterceptor(unaryInts...))
 	}
-	dialOpts = append(dialOpts, o.grpcOpts...)
 
-	return grpc.NewClient(Scheme+":///"+serviceName, dialOpts...)
+	return append(opts, o.grpcOpts...)
 }

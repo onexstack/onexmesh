@@ -48,9 +48,14 @@ func (c *Clientset) AppsV1() appsv1.AppsV1Interface {
 	return &fakeappsv1.FakeAppsV1{Fake: &c.Fake}
 }
 
-// CoreV1 retrieves the CoreV1Client.
-func (c *Clientset) CoreV1() corev1.CoreV1Interface {
-	return &fakecorev1.FakeCoreV1{Fake: &c.Fake}
+// NodeV1 retrieves the NodeInterface.
+func (c *Clientset) NodeV1() corev1.NodeInterface {
+	return (&fakecorev1.FakeCoreV1{Fake: &c.Fake}).Nodes()
+}
+
+// PodV1 retrieves the PodInterface.
+func (c *Clientset) PodV1(namespace string) corev1.PodInterface {
+	return (&fakecorev1.FakeCoreV1{Fake: &c.Fake}).Pods(namespace)
 }
 
 // NewSimpleClientset returns a Clientset that will respond with the provided objects.

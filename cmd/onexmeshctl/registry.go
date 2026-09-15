@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -55,7 +56,7 @@ func newRegistryListCommand() *cobra.Command {
 			return nil
 		},
 	}
-	cmd.Flags().StringVar(&regType, "type", "polaris", "Registry type: polaris, etcd.")
+	cmd.Flags().StringVar(&regType, "type", "polaris", "Registry type: polaris, etcd (simplified --addr/--namespace usage).")
 	cmd.Flags().StringVar(&addr, "addr", "127.0.0.1:8091", "Registry address.")
 	cmd.Flags().StringVar(&namespace, "namespace", "default", "Namespace.")
 	return cmd
@@ -68,6 +69,10 @@ func registryOpts(regType, addr, namespace string) (string, any, error) {
 	case "etcd":
 		return "etcd", etcd.Options{Endpoints: []string{addr}, Namespace: namespace}, nil
 	default:
-		return "", nil, fmt.Errorf("unsupported registry type %q", regType)
+		// The registry framework supports more backends than this command's
+		// simplified --addr/--namespace flags can configure; list both so the
+		// message stays honest about what is and is not available here.
+		return "", nil, fmt.Errorf("unsupported registry type %q (simplified usage supports polaris, etcd; all backends: %s)",
+			regType, strings.Join(registry.BackendNames(), ", "))
 	}
 }

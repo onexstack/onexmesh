@@ -6,18 +6,16 @@ import (
 	"context"
 
 	meshclient "github.com/onexstack/onexmesh/pkg/client"
-	etcd "github.com/onexstack/onexmesh/pkg/registry/etcd"
 )
 
 // DeploymentServiceName is the logical service name in the registry.
 const DeploymentServiceName = "edu.course.student-api"
 
 // NewDeploymentServiceMeshClient discovers "edu.course.student-api" and returns a typed gRPC client.
+// The mesh_service.registry option ("etcd") selects the backend but is not applied
+// automatically here (it carries no connection config). Pass
+// meshclient.WithRegistry("etcd", <backend options>) explicitly to select it.
 func NewDeploymentServiceMeshClient(ctx context.Context, opts ...meshclient.DialOption) (DeploymentServiceClient, error) {
-	opts = append([]meshclient.DialOption{
-		meshclient.WithRegistry("etcd", &etcd.Options{}),
-	}, opts...)
-
 	conn, err := meshclient.Dial(ctx, DeploymentServiceName, opts...)
 	if err != nil {
 		return nil, err

@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/spf13/pflag"
@@ -26,6 +27,9 @@ type SlogOptions struct {
 	Format     string
 	TimeFormat string
 	Output     string
+
+	mu     sync.Mutex
+	closer io.Closer
 }
 
 // NewSlogOptions returns default slog options.
@@ -81,8 +85,32 @@ func (o *SlogOptions) writer() (io.Writer, error) {
 	case "stderr":
 		return os.Stderr, nil
 	default:
-		return os.OpenFile(o.Output, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+		f, err := os.OpenFile(o.Output, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+		if err != nil {
+			return nil, err
+		}
+		// Track the file so Shutdown can close it; close any previous file if the
+		// logger is rebuilt (re-Apply).
+		o.mu.Lock()
+		if o.closer != nil {
+			_ = o.closer.Close()
+		}
+		o.closer = f
+		o.mu.Unlock()
+		return f, nil
 	}
+}
+
+// Shutdown closes any output file opened by the writer. It is idempotent.
+func (o *SlogOptions) Shutdown() error {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.closer == nil {
+		return nil
+	}
+	err := o.closer.Close()
+	o.closer = nil
+	return err
 }
 
 // BuildHandler builds a slog.Handler from the options.

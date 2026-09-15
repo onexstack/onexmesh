@@ -31,6 +31,8 @@ type TokenLimiter struct {
 	mu             sync.Mutex
 	rescue         *xrate.Limiter
 	monitorStarted bool
+	stop           chan struct{}
+	closeOnce      sync.Once
 }
 
 // NewTokenLimiter returns a TokenLimiter consuming from store under key,
@@ -42,6 +44,7 @@ func NewTokenLimiter(rate, burst int, store Store, key string) *TokenLimiter {
 		store:  store,
 		key:    key,
 		rescue: xrate.NewLimiter(xrate.Limit(rate), burst),
+		stop:   make(chan struct{}),
 	}
 	l.alive.Store(true)
 	return l
@@ -54,8 +57,14 @@ func (l *TokenLimiter) Allow() bool {
 
 // AllowN reports whether n requests may proceed.
 func (l *TokenLimiter) AllowN(n int) bool {
+	return l.AllowContext(context.Background(), n)
+}
+
+// AllowContext reports whether n requests may proceed, honoring ctx for the
+// remote store call so a canceled request does not block on the store.
+func (l *TokenLimiter) AllowContext(ctx context.Context, n int) bool {
 	if l.alive.Load() {
-		ok, err := l.store.TakeTokens(context.Background(), l.key, l.rate, l.burst, n)
+		ok, err := l.store.TakeTokens(ctx, l.key, l.rate, l.burst, n)
 		if err == nil {
 			return ok
 		}
@@ -81,10 +90,17 @@ func (l *TokenLimiter) markDown() {
 
 // monitor probes the store until it recovers, then re-enables it. It clears
 // monitorStarted before marking the store alive so a later outage can spawn a
-// fresh monitor instead of leaving the limiter permanently degraded.
+// fresh monitor instead of leaving the limiter permanently degraded. It exits
+// when Close is called so a permanently-down store does not leak a goroutine.
 func (l *TokenLimiter) monitor() {
+	timer := time.NewTimer(probeInterval)
+	defer timer.Stop()
 	for {
-		time.Sleep(probeInterval)
+		select {
+		case <-l.stop:
+			return
+		case <-timer.C:
+		}
 		if err := l.store.Ping(context.Background()); err == nil {
 			l.mu.Lock()
 			l.monitorStarted = false
@@ -92,5 +108,17 @@ func (l *TokenLimiter) monitor() {
 			l.alive.Store(true)
 			return
 		}
+		timer.Reset(probeInterval)
 	}
+}
+
+// Close stops the recovery monitor goroutine, if any. It is idempotent and
+// safe to call when the limiter is no longer needed.
+func (l *TokenLimiter) Close() error {
+	l.closeOnce.Do(func() {
+		if l.stop != nil {
+			close(l.stop)
+		}
+	})
+	return nil
 }

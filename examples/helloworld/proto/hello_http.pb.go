@@ -4,9 +4,8 @@
 package helloworld
 
 import (
-	"google.golang.org/grpc"
-
-	"github.com/onexstack/onexmesh/pkg/server"
+	server "github.com/onexstack/onexmesh/pkg/server"
+	grpc "google.golang.org/grpc"
 )
 
 // NewGreeterService packages the gRPC and HTTP registration for service Greeter into a single server.Service backed by one implementation.

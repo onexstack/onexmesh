@@ -4,26 +4,27 @@
 
 // DeploymentService demonstrates a gRPC service flagged for onexmesh
 // service-discovery code generation. The file-level onexmesh.v1.mesh_service
-// option turns on generation of zz_generated.mesh.go with a
-// NewDeploymentServiceMeshClient constructor that discovers the service via the
-// registry and dials it through pkg/client.
+// option generates zz_generated.mesh.go with a NewDeploymentServiceMeshClient
+// constructor that discovers the service via the registry and dials it through
+// pkg/client. The option's presence is the switch; there is no enable flag.
 syntax = "proto3";
 
 package examples.apps.v1;
 
 import "onexmesh/v1/onexmesh.proto";
+import "onexmesh/v1/http.proto";
 
 option go_package = "github.com/onexstack/onexmesh/examples/apis/apps/v1;appsv1";
 
 option (onexmesh.v1.mesh_service) = {
-  enable_service_discovery: true
   service_name: "edu.course.student-api"
   registry: "etcd"
-  protocol: "grpc"
 };
 
 service DeploymentService {
-  rpc Get(GetRequest) returns (GetReply);
+  rpc Get(GetRequest) returns (GetReply) {
+    option (onexmesh.v1.http) = { get: "/deployments/{name}" };
+  }
 }
 
 message GetRequest {

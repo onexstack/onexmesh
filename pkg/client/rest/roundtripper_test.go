@@ -29,6 +29,8 @@ func (d *fakeDiscovery) Watch(ctx context.Context, name string) (registry.Watche
 	return nil, nil
 }
 
+func (d *fakeDiscovery) Close() error { return nil }
+
 func TestRoundTripRewritesHost(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, "host=%s", r.Host)
@@ -79,11 +81,5 @@ func TestRoundTripFiltersGRPCEndpoints(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, placeholderHost+"/x", nil)
 	if _, err := rt.RoundTrip(req); err == nil {
 		t.Fatal("expected error when no http(s) instance is present")
-	}
-}
-
-func TestNewForMeshConfigMissingRegistry(t *testing.T) {
-	if _, err := NewForMeshConfig("svc"); err == nil {
-		t.Fatal("expected error when registry is not configured")
 	}
 }

@@ -83,6 +83,24 @@ func TestPathFields(t *testing.T) {
 	}
 }
 
+func TestBuildPath(t *testing.T) {
+	got, err := BuildPath("/helloworld/{value}", wrapperspb.String("world"))
+	if err != nil {
+		t.Fatalf("BuildPath: %v", err)
+	}
+	if got != "/helloworld/world" {
+		t.Fatalf("BuildPath = %q, want %q", got, "/helloworld/world")
+	}
+
+	got, err = BuildPath("/items/{value}", wrapperspb.Int32(42))
+	if err != nil {
+		t.Fatalf("BuildPath int: %v", err)
+	}
+	if got != "/items/42" {
+		t.Fatalf("BuildPath int = %q, want %q", got, "/items/42")
+	}
+}
+
 func TestPopulateFieldBadScalar(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())

@@ -27,7 +27,6 @@ type registrar struct {
 	mu         sync.Mutex
 	instanceID string
 	stop       chan struct{}
-	once       sync.Once
 }
 
 // NewRegistrar creates an Eureka Registrar.
@@ -93,20 +92,24 @@ func (r *registrar) Register(_ context.Context, inst *registry.ServiceInstance) 
 	}
 
 	r.mu.Lock()
+	// Stop any previous heartbeat before replacing it, so re-registering does not
+	// leak the old heartbeat goroutine holding a stale stop channel.
+	if r.stop != nil {
+		close(r.stop)
+	}
 	r.instanceID = instanceID
 	r.stop = make(chan struct{})
-	r.mu.Unlock()
-
-	go r.heartbeat(inst.Name, instanceID)
-	return nil
-}
-
-// heartbeat renews the instance lease at half the TTL interval.
-func (r *registrar) heartbeat(app, instanceID string) {
-	r.mu.Lock()
 	stop := r.stop
 	r.mu.Unlock()
 
+	go r.heartbeat(stop, inst.Name, instanceID)
+	return nil
+}
+
+// heartbeat renews the instance lease at half the TTL interval. It takes its
+// stop channel as an argument so a later re-register does not disturb this
+// goroutine's lifecycle.
+func (r *registrar) heartbeat(stop chan struct{}, app, instanceID string) {
 	interval := ttl(r.opts) / 2
 	if interval <= 0 {
 		interval = time.Second
@@ -142,7 +145,8 @@ func (r *registrar) Deregister(_ context.Context, inst *registry.ServiceInstance
 		return nil
 	}
 	instanceID := r.instanceID
-	r.once.Do(func() { close(r.stop) })
+	close(r.stop)
+	r.stop = nil
 	r.mu.Unlock()
 
 	if inst == nil {

@@ -15,8 +15,11 @@ func TestParseSchemeHost(t *testing.T) {
 	if err != nil || scheme != "grpc" || host != "127.0.0.1:9090" {
 		t.Fatalf("parseSchemeHost = (%q, %q, %v)", scheme, host, err)
 	}
-	if _, _, err := parseSchemeHost("127.0.0.1:9090"); err == nil {
-		t.Fatal("expected error for endpoint without scheme")
+	// Scheme-less endpoints are preserved (not dropped) so the HTTP client sees
+	// the same node set as the rest RoundTripper.
+	scheme, host, err = parseSchemeHost("127.0.0.1:9090")
+	if err != nil || scheme != "" || host != "127.0.0.1:9090" {
+		t.Fatalf("parseSchemeHost(scheme-less) = (%q, %q, %v)", scheme, host, err)
 	}
 }
 

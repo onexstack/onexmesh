@@ -118,16 +118,14 @@ func Load(gen *protogen.Plugin) (*Spec, error) {
 	}
 
 	// Scan for onexmesh service-discovery declarations. This is independent of
-	// the REST clientset: files without the option are silently skipped.
+	// the REST clientset: files without the option are silently skipped. The
+	// presence of the option is the switch; there is no enable/disable boolean.
 	for _, file := range gen.Files {
 		opts := file.Proto.GetOptions()
 		if opts == nil || !proto.HasExtension(opts, onexmeshv1.E_MeshService) {
 			continue
 		}
 		ms := proto.GetExtension(opts, onexmeshv1.E_MeshService).(*onexmeshv1.MeshService)
-		if !ms.GetEnableServiceDiscovery() {
-			continue
-		}
 
 		serviceName := ms.GetServiceName()
 		if serviceName == "" {
@@ -136,10 +134,6 @@ func Load(gen *protogen.Plugin) (*Spec, error) {
 		registry := ms.GetRegistry()
 		if registry == "" {
 			registry = "polaris"
-		}
-		protocol := ms.GetProtocol()
-		if protocol == "" {
-			protocol = "grpc"
 		}
 
 		for _, svc := range file.Services {
@@ -151,11 +145,10 @@ func Load(gen *protogen.Plugin) (*Spec, error) {
 				NewClientFn:  "New" + svc.GoName + "Client",
 				ProtoDir:     path.Dir(file.GeneratedFilenamePrefix),
 				Mesh: MeshSpec{
-					Enabled:     true,
 					ServiceName: serviceName,
 					Registry:    registry,
-					Protocol:    protocol,
 				},
+				Methods: httpMethods(svc),
 			})
 		}
 	}
@@ -168,6 +161,63 @@ func Load(gen *protogen.Plugin) (*Spec, error) {
 // package, e.g. "edu.course.student" for package "edu.course.student".
 func inferServiceName(file *protogen.File) string {
 	return string(file.Proto.GetPackage())
+}
+
+// httpMethods returns the HTTP bindings for a service's methods, derived from
+// the onexmesh.v1.http annotations. Methods without the annotation are skipped.
+func httpMethods(svc *protogen.Service) []*HTTPMethodSpec {
+	var out []*HTTPMethodSpec
+	for _, m := range svc.Methods {
+		rule := httpRuleOf(m)
+		if rule == nil {
+			continue
+		}
+		verb, path, body := parseHTTPRule(rule)
+		if verb == "" {
+			continue
+		}
+		out = append(out, &HTTPMethodSpec{
+			Name:         m.GoName,
+			Method:       verb,
+			Path:         path,
+			Body:         body,
+			RequestType:  m.Input.GoIdent.GoName,
+			ResponseType: m.Output.GoIdent.GoName,
+		})
+	}
+	return out
+}
+
+// httpRuleOf reads the onexmesh.v1.http extension from a method's options, or nil.
+func httpRuleOf(m *protogen.Method) *onexmeshv1.HttpRule {
+	opts, ok := m.Desc.Options().(*descriptorpb.MethodOptions)
+	if !ok || opts == nil {
+		return nil
+	}
+	if rule, ok := proto.GetExtension(opts, onexmeshv1.E_Http).(*onexmeshv1.HttpRule); ok && rule != nil {
+		return rule
+	}
+	return nil
+}
+
+// parseHTTPRule extracts the HTTP verb, path template and body flag from a rule.
+func parseHTTPRule(rule *onexmeshv1.HttpRule) (verb, path, body string) {
+	switch {
+	case rule.GetGet() != "":
+		verb, path = "GET", rule.GetGet()
+	case rule.GetPut() != "":
+		verb, path = "PUT", rule.GetPut()
+	case rule.GetPost() != "":
+		verb, path = "POST", rule.GetPost()
+	case rule.GetDelete() != "":
+		verb, path = "DELETE", rule.GetDelete()
+	case rule.GetPatch() != "":
+		verb, path = "PATCH", rule.GetPatch()
+	}
+	if rule.GetBody() == "*" {
+		body = "*"
+	}
+	return verb, path, body
 }
 
 // buildResource builds a ResourceSpec from a resource message, its Resource
@@ -285,22 +335,32 @@ func businessFields(msg *protogen.Message, apiVersionField, kindField, metadataF
 }
 
 // goTypeOf returns the Go type used to declare an apply-configuration field for
-// the given message field. Message fields reference the (pointer) proto type
-// directly; scalars use their Go type.
+// the given message field. The precedence matters: maps and lists are resolved
+// before the single-value message/enum branches, otherwise a repeated message
+// would be mis-declared as a bare pointer instead of a slice.
 func goTypeOf(f *protogen.Field) string {
+	if f.Desc.IsMap() {
+		return mapTypeOf(f)
+	}
+	if f.Desc.IsList() {
+		return "[]" + elemGoType(f)
+	}
 	if f.Message != nil {
 		return "*" + f.Message.GoIdent.GoName
 	}
 	if f.Enum != nil {
 		return f.Enum.GoIdent.GoName
 	}
-	if f.Desc.IsMap() {
-		// Map fields: use the Go map type. We only need a pointer-worthy
-		// declaration; a nil map already distinguishes set/unset.
-		return mapTypeOf(f)
+	return scalarGoType(f.Desc.Kind())
+}
+
+// elemGoType returns the Go type of a list element.
+func elemGoType(f *protogen.Field) string {
+	if f.Message != nil {
+		return "*" + f.Message.GoIdent.GoName
 	}
-	if f.Desc.IsList() {
-		return "[]" + scalarGoType(f.Desc.Kind())
+	if f.Enum != nil {
+		return f.Enum.GoIdent.GoName
 	}
 	return scalarGoType(f.Desc.Kind())
 }
@@ -332,12 +392,22 @@ func scalarGoType(k protoreflect.Kind) string {
 }
 
 // mapTypeOf returns the Go map type for a map field, e.g.
-// "map[string]string" or "map[string]int32".
+// "map[string]string" or "map[string]*Message". The value type is resolved from
+// the map field's synthetic MapEntry message so a message-valued map does not
+// degrade to interface{}.
 func mapTypeOf(f *protogen.Field) string {
 	key := scalarGoType(f.Desc.MapKey().Kind())
 	val := scalarGoType(f.Desc.MapValue().Kind())
-	if f.Desc.MapValue().Kind() == protoreflect.MessageKind || f.Desc.MapValue().Kind() == protoreflect.GroupKind {
-		val = "interface{}"
+	if f.Message != nil && len(f.Message.Fields) == 2 {
+		vf := f.Message.Fields[1]
+		switch {
+		case vf.Message != nil:
+			val = "*" + vf.Message.GoIdent.GoName
+		case vf.Enum != nil:
+			val = vf.Enum.GoIdent.GoName
+		default:
+			val = scalarGoType(vf.Desc.Kind())
+		}
 	}
 	return "map[" + key + "]" + val
 }

@@ -10,7 +10,7 @@
 //     SayHello 对应 GET /helloworld/{name}（path 参数），SayHelloPost 对应 POST /helloworld（body）。
 //   - 一行装配：proto.NewGreeterService(srv) 把 gRPC 与 HTTP 注册打包成一个 server.Service，
 //     业务方无需写 grpc.ServiceRegistrar / 路由装配样板。
-//   - 纯 HTTP 端点（无 proto 定义）：healthz / users / search / api 直接基于 app.NewEngine 返回的
+//   - 纯 HTTP 端点（无 proto 定义）：healthz / users / search / api 直接基于 server.NewGinEngine 返回的
 //     原生 *gin.Engine 以 Gin 风格注册（Group/GET/...，支持前缀 / 分组 / 嵌套 / 组中间件）。
 //   - 按需开启：opts.Mesh.Protocol = grpc|http|both 控制只起 gRPC / 只起 Gin / 双起。
 //   - 灵活定制：requestID 自定义中间件（双协议）。
@@ -26,11 +26,13 @@ import (
 	"github.com/gin-gonic/gin"
 
 	proto "github.com/onexstack/onexmesh/examples/helloworld/proto"
-	"github.com/onexstack/onexmesh/pkg/app"
 	"github.com/onexstack/onexmesh/pkg/codec"
 	"github.com/onexstack/onexmesh/pkg/middleware"
 	"github.com/onexstack/onexmesh/pkg/options"
+	_ "github.com/onexstack/onexmesh/pkg/registry/all"
+	"github.com/onexstack/onexmesh/pkg/server"
 	"github.com/onexstack/onexmesh/pkg/transport"
+	app "github.com/onexstack/onexstack/pkg/app"
 	"github.com/onexstack/onexstack/pkg/errorsx"
 )
 
@@ -128,7 +130,7 @@ func main() {
 
 	// 原生 gin：拿到带统一中间件链的 *gin.Engine，直接以 Gin 风格注册纯 HTTP 端点，
 	// 无需 server.NewGroup / RegisterHTTPRoute 与路由名。
-	engine, err := app.NewEngine(opts)
+	engine, err := server.NewGinEngine(opts)
 	if err != nil {
 		panic(err)
 	}
@@ -168,10 +170,13 @@ func main() {
 	// （GreeterRouteGroups）打包成一个 server.Service，无需写 grpc.ServiceRegistrar / 路由装配样板。
 	svc := proto.NewGreeterService(srv)
 
+	// 用 onexstack 的 app 框架构建应用，用 server.NewMeshServer 装配 MeshServer；
+	// mesh.Run 内部负责初始化 slog/otel、装配服务组、启动与优雅关停。
+	mesh := server.NewMeshServer(opts, server.WithGinEngine(engine), server.WithService(svc))
+
 	a := app.NewApp("helloworld-server", "Helloworld gRPC + HTTP server with IDL-driven routes.",
 		app.WithOptions(opts),
-		// RunMeshWithEngine 装配显式 Service（svc）+ 调用方持有的原生 gin engine。
-		app.WithRun(app.RunMeshWithEngine(opts, engine, svc)),
+		app.WithRun(mesh.Run),
 	)
 	a.Run()
 }

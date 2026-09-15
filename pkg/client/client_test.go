@@ -36,6 +36,8 @@ func (d *staticDiscovery) Watch(ctx context.Context, name string) (registry.Watc
 	return &staticWatcher{}, nil
 }
 
+func (d *staticDiscovery) Close() error { return nil }
+
 type staticWatcher struct{}
 
 func (w *staticWatcher) Next() ([]*registry.ServiceInstance, error) {
@@ -101,13 +103,6 @@ func TestDialDiscoversAndCalls(t *testing.T) {
 	}
 	if resp.GetMessage() != "hello world" {
 		t.Fatalf("message = %q, want %q", resp.GetMessage(), "hello world")
-	}
-}
-
-func TestDialMissingRegistry(t *testing.T) {
-	_, err := client.Dial(context.Background(), "svc")
-	if err == nil {
-		t.Fatal("expected error when registry is not configured")
 	}
 }
 
