@@ -22,11 +22,11 @@ var _ IOptions = (*SlogOptions)(nil)
 
 // SlogOptions configures the slog logger.
 type SlogOptions struct {
-	Level      string
-	AddSource  bool
-	Format     string
-	TimeFormat string
-	Output     string
+	Level      string `mapstructure:"level"`
+	AddSource  bool   `mapstructure:"add-source"`
+	Format     string `mapstructure:"format"`
+	TimeFormat string `mapstructure:"time-format"`
+	Output     string `mapstructure:"output"`
 
 	mu     sync.Mutex
 	closer io.Closer

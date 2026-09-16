@@ -96,27 +96,27 @@ type OTelProviders struct {
 // OTelOptions configures OpenTelemetry trace, metric and log.
 type OTelOptions struct {
 	// Connection settings.
-	Endpoint string
-	Insecure bool
+	Endpoint string `mapstructure:"endpoint"`
+	Insecure bool   `mapstructure:"insecure"`
 
 	// Service identification.
-	ServiceName       string
-	ServiceVersion    string
-	ServiceInstanceID string
-	Environment       string
+	ServiceName       string `mapstructure:"service-name"`
+	ServiceVersion    string `mapstructure:"service-version"`
+	ServiceInstanceID string `mapstructure:"service-instance-id"`
+	Environment       string `mapstructure:"environment"`
 
 	// Behavior settings.
-	SamplingRatio float64
-	WithResource  bool
+	SamplingRatio float64 `mapstructure:"sampling-ratio"`
+	WithResource  bool    `mapstructure:"with-resource"`
 
 	// Output configuration.
-	OutputMode OutputMode
-	OutputDir  string
+	OutputMode OutputMode `mapstructure:"output-mode"`
+	OutputDir  string     `mapstructure:"output-dir"`
 
 	// Logging configuration for the OTel log bridge (non-classic modes). Plain
 	// slog configuration lives on ServerOptions.Slog and is applied separately.
-	Level     string
-	AddSource bool
+	Level     string `mapstructure:"level"`
+	AddSource bool   `mapstructure:"add-source"`
 
 	// Internal state.
 	mu        sync.RWMutex

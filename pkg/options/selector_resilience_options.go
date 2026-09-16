@@ -19,9 +19,9 @@ var _ IOptions = (*SelectorOptions)(nil)
 // SelectorOptions selects the load-balancing strategy and client-side discovery
 // caching.
 type SelectorOptions struct {
-	Strategy string // round_robin, random, weighted, p2c
+	Strategy string `mapstructure:"strategy"` // round_robin, random, weighted, p2c
 	// DiscoveryCacheTTL enables the read-through discovery cache when > 0.
-	DiscoveryCacheTTL time.Duration
+	DiscoveryCacheTTL time.Duration `mapstructure:"discovery-cache-ttl"`
 }
 
 // NewSelectorOptions returns default selector options.
@@ -50,19 +50,19 @@ var _ IOptions = (*ResilienceOptions)(nil)
 
 // ResilienceOptions configures client-side resilience.
 type ResilienceOptions struct {
-	MaxAttempts          int
-	BaseBackoff          time.Duration
-	MaxBackoff           time.Duration
-	BreakerWindow        time.Duration
-	BreakerProbeInterval time.Duration
-	Timeout              time.Duration
+	MaxAttempts          int           `mapstructure:"max-attempts"`
+	BaseBackoff          time.Duration `mapstructure:"base-backoff"`
+	MaxBackoff           time.Duration `mapstructure:"max-backoff"`
+	BreakerWindow        time.Duration `mapstructure:"breaker-window"`
+	BreakerProbeInterval time.Duration `mapstructure:"breaker-probe-interval"`
+	Timeout              time.Duration `mapstructure:"timeout"`
 	// Bulkhead bounds the number of concurrent in-flight requests to a single
 	// downstream service. 0 disables the bulkhead.
-	Bulkhead int
+	Bulkhead int `mapstructure:"bulkhead"`
 	// PolicyPath enables declarative resilience: one or more resiliency YAML
 	// files whose named policies (timeout/retry/breaker) are bound to endpoints.
 	// When set, declarative policies take precedence over the imperative fields.
-	PolicyPath []string
+	PolicyPath []string `mapstructure:"policy-path"`
 }
 
 // NewResilienceOptions returns default resilience options.

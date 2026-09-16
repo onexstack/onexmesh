@@ -14,15 +14,15 @@ var _ IOptions = (*MeshOptions)(nil)
 
 // MeshOptions holds the core service identity and listen addresses.
 type MeshOptions struct {
-	ServiceName string
-	Protocol    string // "grpc", "http", or "both"
-	GRPCAddr    string
-	HTTPAddr    string
-	Host        string
-	Port        int
+	ServiceName string `mapstructure:"service-name"`
+	Protocol    string `mapstructure:"protocol"` // "grpc", "http", or "both"
+	GRPCAddr    string `mapstructure:"grpc-addr"`
+	HTTPAddr    string `mapstructure:"http-addr"`
+	Host        string `mapstructure:"host"`
+	Port        int    `mapstructure:"port"`
 	// MiddlewareRoutes are optional route-level middleware bindings, each of
 	// the form "selector=mw1,mw2" (e.g. "/svc.v1.Admin/*=ratelimit").
-	MiddlewareRoutes []string
+	MiddlewareRoutes []string `mapstructure:"middleware-route"`
 }
 
 // NewMeshOptions returns default mesh options.

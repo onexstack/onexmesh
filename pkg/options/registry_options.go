@@ -22,7 +22,7 @@ var _ IOptions = (*RegistryOptions)(nil)
 type RegistryOptions struct {
 	// Type is the registry backend name: none, polaris, etcd, kubernetes,
 	// consul, nacos or eureka.
-	Type string
+	Type string `mapstructure:"type"`
 
 	// backends holds the backend instances created while AddFlags registered
 	// their flags, keyed by backend name. It is populated during AddFlags.

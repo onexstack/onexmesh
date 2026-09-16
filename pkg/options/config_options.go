@@ -18,14 +18,14 @@ var _ IOptions = (*ConfigOptions)(nil)
 
 // ConfigOptions selects and configures the configuration center backend.
 type ConfigOptions struct {
-	Type      string // none, file, polaris
-	FilePaths []string
+	Type      string   `mapstructure:"type"` // none, file, polaris
+	FilePaths []string `mapstructure:"file-paths"`
 
 	// Polaris config center.
-	PolarisAddresses []string
-	PolarisNamespace string
-	PolarisFileGroup string
-	PolarisFileName  string
+	PolarisAddresses []string `mapstructure:"polaris-addresses"`
+	PolarisNamespace string   `mapstructure:"polaris-namespace"`
+	PolarisFileGroup string   `mapstructure:"polaris-file-group"`
+	PolarisFileName  string   `mapstructure:"polaris-file-name"`
 }
 
 // NewConfigOptions returns default config options.

@@ -16,13 +16,13 @@ import (
 // satisfies the app.FlagSetOptions contract (AddFlags without prefix and
 // Validate returning a single error) so it can be passed directly to app.
 type ServerOptions struct {
-	Mesh       *MeshOptions
-	Slog       *SlogOptions
-	OTel       *OTelOptions
-	Registry   *RegistryOptions
-	Config     *ConfigOptions `mapstructure:"-"`
-	Selector   *SelectorOptions
-	Resilience *ResilienceOptions
+	Mesh       *MeshOptions       `mapstructure:"mesh"`
+	Slog       *SlogOptions       `mapstructure:"log"`
+	OTel       *OTelOptions       `mapstructure:"otel"`
+	Registry   *RegistryOptions   `mapstructure:"registry"`
+	Config     *ConfigOptions     `mapstructure:"-"`
+	Selector   *SelectorOptions   `mapstructure:"selector"`
+	Resilience *ResilienceOptions `mapstructure:"resilience"`
 }
 
 // NewServerOptions returns a ServerOptions with all leaf defaults.
