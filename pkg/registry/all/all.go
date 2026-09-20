@@ -16,4 +16,5 @@ import (
 	_ "github.com/onexstack/onexmesh/pkg/registry/kubernetes"
 	_ "github.com/onexstack/onexmesh/pkg/registry/nacos"
 	_ "github.com/onexstack/onexmesh/pkg/registry/polaris"
+	_ "github.com/onexstack/onexmesh/pkg/registry/static"
 )

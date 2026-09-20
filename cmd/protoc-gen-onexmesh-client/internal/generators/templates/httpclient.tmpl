@@ -11,16 +11,24 @@ import (
 
 // {{.ServiceName}}HTTPClient is a typed HTTP client for the {{.ServiceName}} service. It
 // discovers the service via the onexmesh registry and encodes/decodes
-// protobuf request/response messages with the configured codec (JSON by default).
+// protobuf request/response messages as protobuf-JSON.
 type {{.ServiceName}}HTTPClient struct {
 	c *meshclient.HTTPClient
 }
 
 // New{{.ServiceName}}HTTPClient discovers {{printf "%q" .Mesh.ServiceName}} and returns a
-// typed HTTP client. Pass meshclient.WithHTTPRegistry / WithHTTPCodec /
-// WithHTTPSelector etc. to configure discovery, codec and load balancing.
+// typed HTTP client. Pass meshclient.WithHTTPRegistry / WithHTTPSelector etc. to
+// configure discovery and load balancing.
+//
+// The codec defaults to codec.ProtoJSON and is prepended rather than appended, so
+// a caller passing WithHTTPCodec still overrides it. The default matters: these
+// are protobuf messages on the wire, and the other JSON codec (encoding/json)
+// cannot read a Timestamp, a Duration or a wrapper type — it compiles, works on
+// responses whose timestamp fields happen to be unset, and fails on the first
+// one that carries a value. See codec.JSON.
 func New{{.ServiceName}}HTTPClient(ctx context.Context, opts ...meshclient.HTTPOption) (*{{.ServiceName}}HTTPClient, error) {
-	c, err := meshclient.NewHTTPClient({{.ServiceName}}Name, opts...)
+	c, err := meshclient.NewHTTPClient({{.ServiceName}}Name,
+		append([]meshclient.HTTPOption{meshclient.WithHTTPCodec(codec.ProtoJSON{})}, opts...)...)
 	if err != nil {
 		return nil, err
 	}

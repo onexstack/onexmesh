@@ -281,6 +281,11 @@ func (c *HTTPClient) do(ctx context.Context, node selector.Node, method, path st
 	if err != nil {
 		return err
 	}
+	// Caller-supplied headers first, so the codec's Content-Type below overwrites
+	// any of them: a body encoded by one codec and labelled as another is worse
+	// than a missing header, because the server believes the label. See
+	// WithRequestHeaders.
+	applyRequestHeaders(ctx, httpReq)
 	if req != nil {
 		httpReq.Header.Set("Content-Type", c.codec.ContentType())
 	}

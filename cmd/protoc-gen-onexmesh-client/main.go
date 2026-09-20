@@ -56,18 +56,29 @@ func main() {
 			return err
 		}
 
-		generateClientsetFiles(gen, s)
-		generateFakeClientset(gen, s)
-		generateInformerFiles(gen, s)
-		generateMeshFiles(gen, s)
-		for _, group := range s.Groups {
-			for _, vs := range group.Versions {
-				generateVersionFiles(gen, vs)
-				generateApplyConfigFiles(gen, s, group, vs)
-				generateTypedFiles(gen, s, group, vs)
-				generateListerFiles(gen, s, group, vs)
+		// The clientset tree is generated only for a run that has an anchor. A
+		// run with onexmesh.v1.mesh_service alone is a legitimate invocation —
+		// it wants the HTTP mesh client and no clientset — and every generator
+		// below writes under ClientsetProtoDir, which is empty without an
+		// anchor. Calling them anyway would emit a clientset.go at the output
+		// root rather than fail.
+		if s.ClientsetName != "" {
+			generateClientsetFiles(gen, s)
+			generateFakeClientset(gen, s)
+			generateInformerFiles(gen, s)
+			for _, group := range s.Groups {
+				for _, vs := range group.Versions {
+					generateVersionFiles(gen, vs)
+					generateApplyConfigFiles(gen, s, group, vs)
+					generateTypedFiles(gen, s, group, vs)
+					generateListerFiles(gen, s, group, vs)
+				}
 			}
 		}
+
+		// Mesh generation is independent of the clientset, as spec.Load's own
+		// comment states: it is driven by onexmesh.v1.mesh_service.
+		generateMeshFiles(gen, s)
 		return nil
 	})
 }
@@ -182,11 +193,23 @@ func generateListerFiles(gen *protogen.Plugin, s *spec.Spec, group *spec.GroupSp
 	}
 }
 
+// write formats content and emits it as filename.
+//
+// A template that renders invalid Go is reported through gen.Error rather than
+// panicking. The panic produced a stack trace through four generator frames and
+// ended in "Plugin failed with status code 2", which is a message about the
+// plugin crashing rather than about a template being wrong — and the panic
+// aborted the whole run, so a single bad template meant no other file was
+// written either. gen.Error records the failure and lets protoc report it as a
+// normal plugin error, naming the file.
+//
+// The failure is still fatal to the run: protoc refuses on any error. What
+// changes is who reads it and what it says.
 func write(gen *protogen.Plugin, filename, importPath, content string) {
 	formatted, err := generators.FormatSource(filename, content)
 	if err != nil {
-		// Surface a parse error with context rather than emitting broken code.
-		panic(err)
+		gen.Error(fmt.Errorf("generated %s is not valid Go: %w", filename, err))
+		return
 	}
 	g := gen.NewGeneratedFile(filename, protogen.GoImportPath(importPath))
 	g.Write([]byte(formatted))

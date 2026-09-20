@@ -113,7 +113,19 @@ func Load(gen *protogen.Plugin) (*Spec, error) {
 		}
 	}
 
-	if spec.ClientsetName == "" {
+	// An anchor is required only when there is REST work for it to anchor.
+	//
+	// The check used to be unconditional, which made the HTTP mesh client
+	// unreachable: a service declaring onexmesh.v1.mesh_service and
+	// onexmesh.v1.http annotations but no clientset was refused here, before the
+	// scan below ever ran — and the comment there says, correctly, that the two
+	// are independent. So the plugin documented a capability it could not reach,
+	// and the failure named the wrong problem ("add a clientset anchor" to
+	// someone who wanted no clientset at all).
+	//
+	// What the check was there to catch still is: a resource has nowhere to put
+	// its typed client without an anchor, and the message says exactly that.
+	if len(resources) > 0 && spec.ClientsetName == "" {
 		return nil, fmt.Errorf("no clientset anchor found; add option (onexmesh.rest.v1.clientset) to an anchor .proto file")
 	}
 

@@ -6,7 +6,6 @@ package client_test
 
 import (
 	"context"
-	"fmt"
 	"net"
 	"sync"
 	"testing"
@@ -57,17 +56,17 @@ func (g *greeter) SayHello(ctx context.Context, req *helloworld.HelloRequest) (*
 	return &helloworld.HelloReply{Message: "hello " + req.GetName()}, nil
 }
 
-func init() {
-	// Register a "static" discovery backend whose options are the Discovery
-	// itself, so tests can inject in-memory backends.
-	registry.RegisterDiscovery("static", func(opts any) (registry.Discovery, error) {
-		d, ok := opts.(registry.Discovery)
-		if !ok {
-			return nil, fmt.Errorf("static: expected registry.Discovery, got %T", opts)
-		}
-		return d, nil
-	})
-}
+// This package used to register a fake discovery backend under the name
+// "static", whose "options" were the Discovery itself, so tests could inject an
+// in-memory backend through the registry-options path. That name is now taken by
+// a real backend (pkg/registry/static, which resolves literal addresses), and
+// because the fake was registered from an init() in this same package it
+// silently *overrode* the real one for every test in the package — a test
+// fixture shadowing a production backend name, where the symptom would be a test
+// asserting against the wrong implementation and passing.
+//
+// The fake was never needed: WithDiscovery has always existed for exactly this,
+// and is what the test below now uses.
 
 func TestDialDiscoversAndCalls(t *testing.T) {
 	// Start an in-process gRPC server on a random port.
@@ -90,7 +89,7 @@ func TestDialDiscoversAndCalls(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	conn, err := client.Dial(ctx, "edu.course.student-api", client.WithRegistry("static", discovery))
+	conn, err := client.Dial(ctx, "edu.course.student-api", client.WithDiscovery(discovery))
 	if err != nil {
 		t.Fatal(err)
 	}

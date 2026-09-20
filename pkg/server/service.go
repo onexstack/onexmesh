@@ -52,11 +52,49 @@ type Method struct {
 	Path string
 	// Body is the body binding: "*" for the whole message, "" for none.
 	Body string
+	// Status is the HTTP status a successful call returns. Zero means 200, so a
+	// Method built by NewMethod needs nothing set and existing generated code is
+	// unaffected.
+	//
+	// It exists because the status is not derivable from the verb. A contract that
+	// returns 201 for resource creation and 204 for deletion cannot be served by a
+	// fixed 200: the two are told apart by what the operation *means*, not by
+	// whether it is a POST. Set it from the contract, in the composition root,
+	// where the contract is already being read.
+	Status int
 	// NewReq constructs the request message decoded from path/query/body.
 	NewReq func() proto.Message
 	// Handler is the unified business logic, shared with gRPC.
 	Handler middleware.Handler
+	// Render renders a successful (non-nil) response. Nil means codec.Render,
+	// the framework's generic JSON/protobuf codec.
+	//
+	// It exists because the wire shape of a response is a decision the contract
+	// owns, not the transport. The generic codec marshals the generated Go struct
+	// with encoding/json, which drops zero-valued fields and emits a
+	// google.protobuf.Timestamp as {"seconds":...}: fine for a debug endpoint,
+	// wrong for a contract that requires zero values to appear and timestamps as
+	// RFC3339. Leaving it nil keeps the current behaviour, so existing generated
+	// code is unaffected.
+	Render Renderer
+	// RenderError renders a failed call. Nil means codec.RenderError, the
+	// framework's errorsx envelope ({"code":<http status>,"reason":...}).
+	//
+	// It is a separate hook because the two shapes are separately owned: a
+	// contract that documents {"code":"Domain.Specific"} — a string reason, no
+	// numeric status in the body — cannot be served by the errorsx envelope, and
+	// answering the wrong one is invisible to a client that only checks the HTTP
+	// status.
+	RenderError ErrorRenderer
 }
+
+// Renderer writes a successful response. It has the same signature as
+// codec.Render so the framework default can be named directly.
+type Renderer func(c *gin.Context, status int, v any)
+
+// ErrorRenderer writes a failed call. It has the same signature as
+// codec.RenderError so the framework default can be named directly.
+type ErrorRenderer func(c *gin.Context, err error)
 
 // NewMethod builds a proto-first Method from a strongly-typed business function
 // h. The Req/Resp type parameters are constrained to proto.Message, so request
@@ -95,23 +133,52 @@ func NewService(name string, methods ...Method) Service {
 // response. This replaces the per-method hand-written binding that generated
 // code used to emit.
 func (m Method) httpHandler() gin.HandlerFunc {
+	renderError := m.RenderError
+	if renderError == nil {
+		renderError = codec.RenderError
+	}
+
 	return func(c *gin.Context) {
 		msg := m.NewReq()
 		if err := codec.BindHTTP(c, msg, m.Path, m.Body); err != nil {
-			codec.RenderError(c, err)
+			renderError(c, err)
 			return
 		}
 		resp, err := m.Handler(c.Request.Context(), msg)
 		if err != nil {
-			codec.RenderError(c, err)
+			renderError(c, err)
 			return
 		}
+
+		// A nil response means the handler has nothing to say — a deletion, for
+		// instance. That is 204 when the contract asked for it and 200 otherwise;
+		// both are honoured here rather than collapsed into one.
 		if resp == nil {
+			if m.Status != 0 {
+				c.Status(m.Status)
+				return
+			}
 			c.Status(http.StatusOK)
 			return
 		}
-		codec.Render(c, http.StatusOK, resp)
+
+		// The contract may override how a response is written; nil keeps the
+		// framework's generic codec.
+		render := m.Render
+		if render == nil {
+			render = codec.Render
+		}
+		render(c, m.StatusOrDefault(), resp)
 	}
+}
+
+// StatusOrDefault returns the status a successful call returns, defaulting to
+// 200 for a Method that declares none.
+func (m Method) StatusOrDefault() int {
+	if m.Status == 0 {
+		return http.StatusOK
+	}
+	return m.Status
 }
 
 // ginPath converts the grpc-gateway-style "{field}" template into gin's ":field"
