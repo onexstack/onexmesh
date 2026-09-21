@@ -17,8 +17,8 @@ func NewGreeterService(srv GreeterServer) server.Service {
 			RegisterGreeterServer(s, srv)
 		},
 		Methods: []server.Method{
-			server.NewMethod("SayHello", "GET", "/helloworld/{name}", "", func() *HelloRequest { return &HelloRequest{} }, srv.SayHello),
-			server.NewMethod("SayHelloPost", "POST", "/helloworld", "*", func() *HelloRequest { return &HelloRequest{} }, srv.SayHelloPost),
+			server.NewMethod("SayHello", "GET", "/helloworld/{name}", "", srv.SayHello),
+			server.NewMethod("SayHelloPost", "POST", "/helloworld", "*", srv.SayHelloPost),
 		},
 	}
 }

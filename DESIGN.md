@@ -203,8 +203,10 @@ IDL 生成的 HTTP 路由经 `protoc-gen-onexmesh` 生成的 `New<Service>Servic
   `<Service>Server` 接口（单一接口、单一 struct 双协议），把 gRPC 注册（`Register<Service>Server`）
   与 proto-first HTTP 路由（`[]server.Method`）两个固定样板收进生成代码，业务方一行
   `proto.NewGreeterService(srv)` 完成装配，无需写 `grpc.ServiceRegistrar` / 路由装配样板。
-- 每个 method 经 `server.NewMethod(name, verb, path, body, newReq, handler)` 声明：`handler` 就是
+- 每个 method 经 `server.NewMethod(name, verb, path, body, handler)` 声明：`handler` 就是
   `<Service>Server` 接口的同名方法，`path` 是 `{field}` 模板、`body` 是 `"*"`（整 message）或空。
+  请求构造器不单独传参——`NewMethod` 由 `handler` 的请求类型（`Req`）经 protoreflect
+  （`zero.ProtoReflect().New()`）推导，故请求构造器是 `Method` 的不导出字段 `newReq`，不是契约决策。
 - 运行时由 `Method.httpHandler()` 统一处理：`codec.BindHTTP`（依序 `BindPath`（`{field}` path 参数）→
   `BindQuery`（query 参数）→ body 解码）→ 调用统一 `Handler` → `codec.Render`/`RenderError` 编码响应。
 - `codec.BindPath/BindQuery` 用 protoreflect + strconv 做 string→标量/enum/repeated/嵌套 回填

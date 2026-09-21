@@ -41,7 +41,7 @@ type Service struct {
 
 // Method declares one proto RPC method's HTTP surface. It is a data descriptor:
 // Path carries the grpc-gateway-style "{field}" template, Body the body binding
-// ("" or "*"), and NewReq/Handler the proto-first request factory and business
+// ("" or "*"), newReq the proto-first request factory and Handler the business
 // logic. The composition root turns it into a gin route via httpHandler.
 type Method struct {
 	// Name is the gRPC method name, e.g. "SayHello".
@@ -62,8 +62,12 @@ type Method struct {
 	// whether it is a POST. Set it from the contract, in the composition root,
 	// where the contract is already being read.
 	Status int
-	// NewReq constructs the request message decoded from path/query/body.
-	NewReq func() proto.Message
+	// newReq constructs the request message decoded from path/query/body. It is
+	// derived by NewMethod from the handler's request type, so it is an
+	// implementation detail rather than a contract decision, and callers never
+	// set it. A Method that declares none — a hand-built literal, say — reports an
+	// error per request instead of panicking on a nil func call.
+	newReq func() proto.Message
 	// Handler is the unified business logic, shared with gRPC.
 	Handler middleware.Handler
 	// Render renders a successful (non-nil) response. Nil means codec.Render,
@@ -101,17 +105,31 @@ type ErrorRenderer func(c *gin.Context, err error)
 // and response types are enforced to be protobuf at compile time, and the same h
 // backs both the gRPC method (via the generated RegisterXxxServer) and the HTTP
 // route (via httpHandler).
+//
+// NewMethod derives the request factory from Req, so a caller never passes one:
+// a constructor closure would restate what h's signature already says, and the
+// only shape it can usefully take is "allocate a zero Req". Inference runs from h
+// alone, so the generated call is
+//
+//	server.NewMethod("SayHello", "GET", "/helloworld/{name}", "", srv.SayHello)
 func NewMethod[Req, Resp proto.Message](
 	name, method, path, body string,
-	newReq func() Req,
 	h func(context.Context, Req) (Resp, error),
 ) Method {
+	// Req is always a pointer to a generated message, so a typed nil still
+	// dispatches to the generated ProtoReflect (protoc-gen-go emits it with a
+	// pointer receiver, and it tolerates a nil receiver), whose MessageType knows
+	// how to allocate a fresh, mutable message. new(Req) would instead produce a
+	// **Req and panic on the assertion.
+	var zero Req
+	newReq := func() proto.Message { return zero.ProtoReflect().New().Interface() }
+
 	return Method{
 		Name:   name,
 		Method: method,
 		Path:   path,
 		Body:   body,
-		NewReq: func() proto.Message { return newReq() },
+		newReq: newReq,
 		Handler: func(ctx context.Context, req any) (any, error) {
 			r, ok := req.(Req)
 			if !ok {
@@ -139,7 +157,15 @@ func (m Method) httpHandler() gin.HandlerFunc {
 	}
 
 	return func(c *gin.Context) {
-		msg := m.NewReq()
+		// newReq is unexported and only NewMethod sets it, so a Method built by
+		// hand has none. Report that as a failed call rather than letting the nil
+		// func call panic inside the request goroutine.
+		if m.newReq == nil {
+			renderError(c, fmt.Errorf("server: method %s: no request factory; build the Method with server.NewMethod", m.Name))
+			return
+		}
+
+		msg := m.newReq()
 		if err := codec.BindHTTP(c, msg, m.Path, m.Body); err != nil {
 			renderError(c, err)
 			return

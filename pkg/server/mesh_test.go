@@ -111,7 +111,6 @@ func TestMeshServerWithServices(t *testing.T) {
 		"helloworld.Greeter",
 		server.NewMethod(
 			"SayHello", "POST", "/hello", "*",
-			func() *proto.HelloRequest { return &proto.HelloRequest{} },
 			func(_ context.Context, r *proto.HelloRequest) (*proto.HelloReply, error) {
 				return &proto.HelloReply{Message: "Hello " + r.GetName()}, nil
 			},

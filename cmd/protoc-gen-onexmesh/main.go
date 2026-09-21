@@ -26,6 +26,8 @@
 package main
 
 import (
+	"fmt"
+
 	"google.golang.org/protobuf/compiler/protogen"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/descriptorpb"
@@ -67,6 +69,28 @@ func generate(gen *protogen.Plugin, file *protogen.File) error {
 		var methods []*protogen.Method
 		for _, m := range svc.Methods {
 			if ruleOf(m) == nil {
+				continue
+			}
+			// A streaming RPC cannot be served by the unary handler NewMethod
+			// expects: srv.<M> would be func(*Req, XxxServer) error (or the
+			// client-stream shapes), which does not unify with
+			// func(context.Context, Req) (Resp, error). Emitting it anyway would
+			// surface as a generic-inference error inside the generated file, far
+			// from the annotation that caused it.
+			if m.Desc.IsStreamingClient() || m.Desc.IsStreamingServer() {
+				gen.Error(fmt.Errorf(
+					"%s.%s: onexmesh.v1.http cannot annotate a streaming method", svc.GoName, m.GoName,
+				))
+				continue
+			}
+			// parseBinding matches the verb by testing one field at a time, so a
+			// rule carrying an unsupported verb (or none at all) binds an empty
+			// method. Method.Apply registers it via gin's Handle, which panics at
+			// startup on an empty verb; reject it at generation time instead.
+			if b := parseBinding(m); b.httpMethod == "" {
+				gen.Error(fmt.Errorf(
+					"%s.%s: onexmesh.v1.http must set one of get/put/post/delete/patch", svc.GoName, m.GoName,
+				))
 				continue
 			}
 			methods = append(methods, m)
@@ -114,9 +138,8 @@ func generate(gen *protogen.Plugin, file *protogen.File) error {
 		g.P("        Methods: []", serverMethod, "{")
 		for _, m := range svc.methods {
 			b := parseBinding(m)
-			in := g.QualifiedGoIdent(m.Input.GoIdent)
 			g.P("            ", serverNewMethod, "(\"", m.GoName, "\", \"", b.httpMethod, "\", \"", b.path, "\", \"", b.body,
-				"\", func() *", in, " { return &", in, "{} }, srv.", m.GoName, "),")
+				"\", srv.", m.GoName, "),")
 		}
 		g.P("        },")
 		g.P("    }")

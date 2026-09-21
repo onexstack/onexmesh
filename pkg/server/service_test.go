@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/gin-gonic/gin"
+	"google.golang.org/protobuf/types/known/emptypb"
 	"google.golang.org/protobuf/types/known/wrapperspb"
 
 	"github.com/onexstack/onexmesh/pkg/server"
@@ -21,19 +22,22 @@ import (
 // TestNewMethodProtoFirst verifies NewMethod builds a proto-first Method: it
 // carries the HTTP binding descriptor and erases a strongly-typed function over
 // proto.Message Req/Resp behind the unified middleware.Handler.
+//
+// The request factory is no longer a parameter — NewMethod derives it from Req —
+// so this also pins that the derived factory produces a message codec.BindHTTP
+// can fill: "{value}" binds onto the request the handler receives.
 func TestNewMethodProtoFirst(t *testing.T) {
-	m := server.NewMethod("Echo", "POST", "/echo/{id}", "*",
-		func() *wrapperspb.StringValue { return &wrapperspb.StringValue{} },
+	m := server.NewMethod("Echo", "GET", "/echo/{value}", "",
 		func(_ context.Context, r *wrapperspb.StringValue) (*wrapperspb.StringValue, error) {
 			return wrapperspb.String("echo " + r.GetValue()), nil
 		},
 	)
 
-	if m.Name != "Echo" || m.Method != "POST" || m.Path != "/echo/{id}" || m.Body != "*" {
-		t.Fatalf("method = %+v, want Name=Echo Method=POST Path=/echo/{id} Body=*", m)
+	if m.Name != "Echo" || m.Method != "GET" || m.Path != "/echo/{value}" || m.Body != "" {
+		t.Fatalf("method = %+v, want Name=Echo Method=GET Path=/echo/{value} Body=", m)
 	}
-	if m.NewReq() == nil || m.Handler == nil {
-		t.Fatal("NewReq and Handler must be non-nil")
+	if m.Handler == nil {
+		t.Fatal("Handler must be non-nil")
 	}
 
 	resp, err := m.Handler(context.Background(), wrapperspb.String("hi"))
@@ -47,6 +51,22 @@ func TestNewMethodProtoFirst(t *testing.T) {
 	// A mismatched request type is rejected with a clear error.
 	if _, err := m.Handler(context.Background(), "wrong-type"); err == nil {
 		t.Fatal("handler with wrong request type = nil error, want error")
+	}
+
+	// The derived factory must hand codec.BindHTTP a fresh, mutable message that
+	// the type assertion in Handler accepts: the path parameter binds onto it and
+	// the handler observes it.
+	engine := gin.New()
+	m.Apply(&engine.RouterGroup)
+
+	rec := httptest.NewRecorder()
+	engine.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/echo/abc", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body %q)", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "echo abc") {
+		t.Fatalf("body = %q, want the path parameter bound onto the derived request", rec.Body.String())
 	}
 }
 
@@ -66,7 +86,6 @@ func TestMethodStatusOrDefault(t *testing.T) {
 	// NewMethod must produce the zero value: if it ever set a status, generated
 	// code would silently start answering with it.
 	m := server.NewMethod("Create", "POST", "/things", "*",
-		func() *wrapperspb.StringValue { return &wrapperspb.StringValue{} },
 		func(context.Context, *wrapperspb.StringValue) (*wrapperspb.StringValue, error) {
 			return wrapperspb.String("ok"), nil
 		},
@@ -90,7 +109,6 @@ func TestMethodRenderOverride(t *testing.T) {
 
 	newMethod := func() server.Method {
 		return server.NewMethod("Get", "GET", "/things/{id}", "",
-			func() *wrapperspb.StringValue { return &wrapperspb.StringValue{} },
 			func(context.Context, *wrapperspb.StringValue) (*wrapperspb.StringValue, error) {
 				return wrapperspb.String("value"), nil
 			},
@@ -134,8 +152,7 @@ func TestMethodRenderErrorOverride(t *testing.T) {
 	}
 
 	newMethod := func(h func(context.Context, *wrapperspb.StringValue) (*wrapperspb.StringValue, error)) server.Method {
-		return server.NewMethod("Get", "GET", "/things/{id}", "",
-			func() *wrapperspb.StringValue { return &wrapperspb.StringValue{} }, h)
+		return server.NewMethod("Get", "GET", "/things/{id}", "", h)
 	}
 
 	if m := newMethod(func(context.Context, *wrapperspb.StringValue) (*wrapperspb.StringValue, error) {
@@ -162,5 +179,60 @@ func TestMethodRenderErrorOverride(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), `"code":"Domain.Specific"`) {
 		t.Fatalf("body = %q, want the contract error renderer's output", rec.Body.String())
+	}
+}
+
+// TestNewMethodDerivesRequestFactory pins the property that let NewMethod drop
+// its newReq parameter: the factory is derived from Req through the protobuf
+// runtime, not from a composite literal the caller supplies.
+//
+// It is descriptor-driven, so it must work for a message that is not the
+// handler's own and for a well-known type with no hand-written allocation site.
+func TestNewMethodDerivesRequestFactory(t *testing.T) {
+	// google.protobuf.Empty: the generated code for a request-less RPC names no
+	// concrete Go struct, so nothing but the descriptor can allocate it.
+	m := server.NewMethod("Ping", "GET", "/ping", "",
+		func(context.Context, *emptypb.Empty) (*emptypb.Empty, error) {
+			return &emptypb.Empty{}, nil
+		},
+	)
+
+	engine := gin.New()
+	m.Apply(&engine.RouterGroup)
+
+	// Each request must get its own message: a shared one would leak state across
+	// concurrent calls. The handler is a GET on a request-less type, so the only
+	// way it succeeds is a freshly allocated, non-nil, bindable message.
+	for i := 0; i < 2; i++ {
+		rec := httptest.NewRecorder()
+		engine.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/ping", nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("request %d: status = %d, want 200 (body %q)", i, rec.Code, rec.Body.String())
+		}
+	}
+}
+
+// TestMethodWithoutRequestFactory guards the failure mode that the unexported
+// request factory introduces: a Method built by hand — not via NewMethod — has
+// none, and the handler must report that per request rather than panic on a nil
+// func call inside the request goroutine.
+func TestMethodWithoutRequestFactory(t *testing.T) {
+	m := server.Method{
+		Name:   "HandBuilt",
+		Method: http.MethodGet,
+		Path:   "/hand-built",
+		Handler: func(context.Context, any) (any, error) {
+			return wrapperspb.String("unreachable"), nil
+		},
+	}
+
+	engine := gin.New()
+	m.Apply(&engine.RouterGroup)
+
+	rec := httptest.NewRecorder()
+	engine.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/hand-built", nil))
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusInternalServerError)
 	}
 }

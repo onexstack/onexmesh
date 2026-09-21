@@ -128,7 +128,6 @@ mesh := server.NewMeshServer(opts, server.WithService(svc))
 ```go
 svc := server.NewService("helloworld.Greeter",
     server.NewMethod("SayHello", "POST", "/hello", "*",
-        func() *proto.HelloRequest { return &proto.HelloRequest{} },
         func(ctx context.Context, r *proto.HelloRequest) (*proto.HelloReply, error) {
             return &proto.HelloReply{Message: "Hello " + r.GetName()}, nil
         },
