@@ -25,6 +25,10 @@ func (b *backend) AddFlags(fs *pflag.FlagSet, prefix string) {
 	fs.IntVar(&b.opts.TTL, prefix+".ttl", b.opts.TTL, "Polaris heartbeat TTL in seconds.")
 }
 
+func (b *backend) Decode(raw map[string]any) error {
+	return registry.DecodeOptions(raw, &b.opts)
+}
+
 func (b *backend) NewRegistrar(host string, port int, protocol string) (registry.Registrar, error) {
 	b.opts.Host = host
 	b.opts.Port = port

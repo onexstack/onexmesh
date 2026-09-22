@@ -40,14 +40,27 @@ func TestSelectorOptionsDialOption(t *testing.T) {
 	}
 }
 
-func TestServerOptionsServiceInstance(t *testing.T) {
+// meshOptionsForTest returns options whose advertised address is fixed, so the
+// endpoint assertions below are deterministic rather than dependent on the
+// machine's interfaces.
+func meshOptionsForTest(t *testing.T, protocol string) *ServerOptions {
+	t.Helper()
 	o := NewServerOptions()
 	o.Mesh.ServiceName = "svc"
-	o.Mesh.Protocol = "both"
+	o.Mesh.Protocol = protocol
 	o.Mesh.GRPCAddr = "127.0.0.1:9090"
 	o.Mesh.HTTPAddr = "127.0.0.1:8080"
+	o.Mesh.Host = "127.0.0.1"
+	return o
+}
 
-	inst := o.ServiceInstance()
+func TestServerOptionsServiceInstance(t *testing.T) {
+	o := meshOptionsForTest(t, "both")
+
+	inst, err := o.ServiceInstance()
+	if err != nil {
+		t.Fatalf("ServiceInstance() error = %v", err)
+	}
 	if inst.Name != "svc" {
 		t.Fatalf("instance name = %q, want %q", inst.Name, "svc")
 	}
@@ -58,13 +71,12 @@ func TestServerOptionsServiceInstance(t *testing.T) {
 }
 
 func TestServerOptionsServiceInstanceFor(t *testing.T) {
-	o := NewServerOptions()
-	o.Mesh.ServiceName = "svc"
-	o.Mesh.Protocol = "both"
-	o.Mesh.GRPCAddr = "127.0.0.1:9090"
-	o.Mesh.HTTPAddr = "127.0.0.1:8080"
+	o := meshOptionsForTest(t, "both")
 
-	grpcInst := o.ServiceInstanceFor("grpc")
+	grpcInst, err := o.ServiceInstanceFor("grpc")
+	if err != nil {
+		t.Fatalf("ServiceInstanceFor(grpc) error = %v", err)
+	}
 	if grpcInst == nil {
 		t.Fatal("ServiceInstanceFor(grpc) = nil")
 	}
@@ -72,7 +84,10 @@ func TestServerOptionsServiceInstanceFor(t *testing.T) {
 		t.Fatalf("grpc endpoints = %v, want %v", grpcInst.Endpoints, want)
 	}
 
-	httpInst := o.ServiceInstanceFor("http")
+	httpInst, err := o.ServiceInstanceFor("http")
+	if err != nil {
+		t.Fatalf("ServiceInstanceFor(http) error = %v", err)
+	}
 	if httpInst == nil {
 		t.Fatal("ServiceInstanceFor(http) = nil")
 	}
@@ -82,13 +97,74 @@ func TestServerOptionsServiceInstanceFor(t *testing.T) {
 }
 
 func TestServerOptionsServiceInstanceForExcluded(t *testing.T) {
+	o := meshOptionsForTest(t, "grpc")
+
+	inst, err := o.ServiceInstanceFor("http")
+	if err != nil {
+		t.Fatalf("ServiceInstanceFor(http) error = %v", err)
+	}
+	if inst != nil {
+		t.Fatalf("ServiceInstanceFor(http) = %v, want nil for grpc-only", inst)
+	}
+}
+
+// TestServerOptionsServiceInstanceAdvertisesHost pins the endpoint half of the
+// listen-address bug: a backend that registers the instance itself (etcd,
+// kubernetes) publishes inst.Endpoints, which used to be built from the listen
+// address — "grpc://0.0.0.0:9090", an entry that resolves to whoever reads it.
+func TestServerOptionsServiceInstanceAdvertisesHost(t *testing.T) {
 	o := NewServerOptions()
 	o.Mesh.ServiceName = "svc"
 	o.Mesh.Protocol = "grpc"
-	o.Mesh.GRPCAddr = "127.0.0.1:9090"
+	// Listening on every interface, but reachable at one address.
+	o.Mesh.GRPCAddr = "0.0.0.0:9090"
+	o.Mesh.Host = "10.0.0.7"
 
-	if inst := o.ServiceInstanceFor("http"); inst != nil {
-		t.Fatalf("ServiceInstanceFor(http) = %v, want nil for grpc-only", inst)
+	inst, err := o.ServiceInstanceFor("grpc")
+	if err != nil {
+		t.Fatalf("ServiceInstanceFor(grpc) error = %v", err)
+	}
+	if want := []string{"grpc://10.0.0.7:9090"}; !reflect.DeepEqual(inst.Endpoints, want) {
+		t.Fatalf("endpoints = %v, want %v (the advertised host, not the listen address)", inst.Endpoints, want)
+	}
+}
+
+// TestServerOptionsServiceInstanceCarriesEnv pins that the environment reaches
+// the instance metadata, which is what lets one registry namespace hold several
+// environments without a caller mistaking a developer's laptop for a replica.
+func TestServerOptionsServiceInstanceCarriesEnv(t *testing.T) {
+	o := meshOptionsForTest(t, "grpc")
+	o.Mesh.Env = "prod"
+	o.Mesh.Version = "1.4.2"
+	o.Mesh.Metadata = map[string]string{"zone": "sh"}
+
+	inst, err := o.ServiceInstanceFor("grpc")
+	if err != nil {
+		t.Fatalf("ServiceInstanceFor(grpc) error = %v", err)
+	}
+	if inst.Version != "1.4.2" {
+		t.Errorf("version = %q, want 1.4.2", inst.Version)
+	}
+	if got := inst.Metadata[MetadataKeyEnv]; got != "prod" {
+		t.Errorf("metadata[%q] = %q, want prod", MetadataKeyEnv, got)
+	}
+	if got := inst.Metadata["zone"]; got != "sh" {
+		t.Errorf("metadata[zone] = %q, want sh", got)
+	}
+}
+
+// TestServerOptionsServiceInstanceNoMetadataWhenUnset pins that a service with
+// nothing to say writes no metadata at all, rather than an empty map into every
+// backend that serializes the instance.
+func TestServerOptionsServiceInstanceNoMetadataWhenUnset(t *testing.T) {
+	o := meshOptionsForTest(t, "grpc")
+
+	inst, err := o.ServiceInstanceFor("grpc")
+	if err != nil {
+		t.Fatalf("ServiceInstanceFor(grpc) error = %v", err)
+	}
+	if inst.Metadata != nil {
+		t.Errorf("metadata = %v, want nil when nothing is configured", inst.Metadata)
 	}
 }
 

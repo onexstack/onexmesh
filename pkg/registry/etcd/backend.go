@@ -30,6 +30,10 @@ func (b *backend) AddFlags(fs *pflag.FlagSet, prefix string) {
 	fs.StringVar(&b.opts.Namespace, prefix+".namespace", b.opts.Namespace, "Etcd key namespace.")
 }
 
+func (b *backend) Decode(raw map[string]any) error {
+	return registry.DecodeOptions(raw, &b.opts)
+}
+
 // NewRegistrar ignores host/port/protocol: etcd registration carries the
 // endpoints in the ServiceInstance, not in Options.
 func (b *backend) NewRegistrar(_ string, _ int, _ string) (registry.Registrar, error) {

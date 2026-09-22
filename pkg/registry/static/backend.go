@@ -34,6 +34,15 @@ func (b *backend) AddFlags(fs *pflag.FlagSet, prefix string) {
 			"e.g. edu.onex.commerce-apiserver=http://127.0.0.1:8182.")
 }
 
+// Decode fills in the endpoints from a configuration file. A file writes them
+// as a mapping (service -> addresses), which is the natural shape there; the
+// flag form is the "service=address" list above, and NewDiscovery merges the
+// two. A file that uses the flag form instead fails here, naming the option, so
+// the ambiguity costs a startup error rather than a silently empty address list.
+func (b *backend) Decode(raw map[string]any) error {
+	return registry.DecodeOptions(raw, &b.opts)
+}
+
 // NewRegistrar returns a Registrar that registers nothing.
 //
 // Selecting this backend is how an operator says "this instance is not published

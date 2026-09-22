@@ -29,6 +29,10 @@ func (b *backend) AddFlags(fs *pflag.FlagSet, prefix string) {
 	fs.Float64Var(&b.opts.Weight, prefix+".weight", b.opts.Weight, "Nacos instance weight.")
 }
 
+func (b *backend) Decode(raw map[string]any) error {
+	return registry.DecodeOptions(raw, &b.opts)
+}
+
 func (b *backend) NewRegistrar(host string, port int, protocol string) (registry.Registrar, error) {
 	b.opts.Host = host
 	b.opts.Port = port

@@ -49,6 +49,38 @@ func (o *ServerOptions) AddFlags(fs *pflag.FlagSet) {
 	o.Resilience.AddFlags(fs, "resilience")
 }
 
+// Complete applies the post-unmarshal fixups shared by the whole option tree.
+// It runs after flags are bound and the config file is unmarshaled, and before
+// Validate — so a setting that will be rejected is first put in its final form.
+//
+// The registry layer needs it because a backend's typed Options is not a field
+// of these options: the values a file carries under registry.<name>.* are
+// collected into RegistryOptions.Options and have to be handed to the backend
+// that understands them. See RegistryOptions.Complete.
+func (o *ServerOptions) Complete() error {
+	if err := o.Registry.Complete(); err != nil {
+		return err
+	}
+	o.deriveOTelIdentity()
+	return nil
+}
+
+// deriveOTelIdentity fills the OTel resource attributes a deployment did not
+// set from the mesh identity, which describes the same service.
+//
+// The dependency runs one way on purpose: mesh is the source of truth and OTel
+// takes what it needs. Reversing it — reading the registry namespace from
+// otel.environment, say — would tie the service topology label to an
+// observability setting, so neither could change without the other.
+func (o *ServerOptions) deriveOTelIdentity() {
+	if o.Mesh.Env != "" && (o.OTel.Environment == "" || o.OTel.Environment == "development") {
+		o.OTel.Environment = o.Mesh.Env
+	}
+	if o.Mesh.Version != "" && o.OTel.ServiceVersion == "" {
+		o.OTel.ServiceVersion = o.Mesh.Version
+	}
+}
+
 // Validate aggregates all leaf validation errors into a single error.
 func (o *ServerOptions) Validate() error {
 	var errs []error

@@ -90,7 +90,24 @@ type Method struct {
 	// answering the wrong one is invisible to a client that only checks the HTTP
 	// status.
 	RenderError ErrorRenderer
+	// Validate applies the request's default values and runs its validation. It
+	// is called after the request is bound from path/query/body and before the
+	// handler sees it, which is the only point where both hold: before binding
+	// there is no message to default, and after the handler the request may
+	// already have been written.
+	//
+	// It exists because binding and judging are different jobs with different
+	// owners. The framework knows how to turn a request into a message; whether
+	// the message means anything — a size a caller may ask for, a field the
+	// contract requires, a name that is already taken — is the contract's
+	// business, and it is the same judgement for every transport. Leaving it nil
+	// keeps the current behaviour, so existing generated code is unaffected.
+	Validate ValidateHook
 }
+
+// ValidateHook defaults and validates a bound request. An error is rendered with
+// RenderError and the handler is not called.
+type ValidateHook func(ctx context.Context, req proto.Message) error
 
 // Renderer writes a successful response. It has the same signature as
 // codec.Render so the framework default can be named directly.
@@ -170,6 +187,17 @@ func (m Method) httpHandler() gin.HandlerFunc {
 			renderError(c, err)
 			return
 		}
+
+		// Defaults and validation run here, on the bound message, so that every
+		// route of the service gets them without its handler repeating the call —
+		// and so that a handler cannot forget to make it. See Method.Validate.
+		if m.Validate != nil {
+			if err := m.Validate(c.Request.Context(), msg); err != nil {
+				renderError(c, err)
+				return
+			}
+		}
+
 		resp, err := m.Handler(c.Request.Context(), msg)
 		if err != nil {
 			renderError(c, err)

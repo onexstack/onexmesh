@@ -46,14 +46,23 @@ func (r *registrar) Register(ctx context.Context, inst *registry.ServiceInstance
 		Host:         r.opts.Host,
 		Port:         r.opts.Port,
 		ServiceToken: r.opts.Token,
-		Metadata:     inst.Metadata,
+		Metadata:     mergeMetadata(r.opts.Metadata, inst.Metadata),
 	}
 	if r.opts.Protocol != "" {
 		p := r.opts.Protocol
 		req.Protocol = &p
 	}
-	if r.opts.Version != "" {
-		v := r.opts.Version
+	// The instance is authoritative — it is what the composition root built from
+	// the service's own mesh options. Options.Version stays as the fallback for a
+	// caller that set the version on the registrar rather than on the instance.
+	// Reading only the latter, as this did, registered an empty version for every
+	// service the framework wired up itself.
+	version := inst.Version
+	if version == "" {
+		version = r.opts.Version
+	}
+	if version != "" {
+		v := version
 		req.Version = &v
 	}
 	if r.opts.Heartbeat {
@@ -74,6 +83,24 @@ func (r *registrar) Register(ctx context.Context, inst *registry.ServiceInstance
 	r.registered = true
 	r.mu.Unlock()
 	return nil
+}
+
+// mergeMetadata layers the instance's metadata over the registrar's own, with
+// the instance winning on a shared key: the instance is what the composition
+// root built from the service's mesh options, while the registrar's options are
+// the operator's static configuration for this backend.
+func mergeMetadata(base, override map[string]string) map[string]string {
+	if len(base) == 0 {
+		return override
+	}
+	out := make(map[string]string, len(base)+len(override))
+	for k, v := range base {
+		out[k] = v
+	}
+	for k, v := range override {
+		out[k] = v
+	}
+	return out
 }
 
 func (r *registrar) Deregister(ctx context.Context, inst *registry.ServiceInstance) error {

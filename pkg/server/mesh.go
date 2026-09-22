@@ -8,8 +8,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"net"
-	"strconv"
 	"sync"
 
 	"github.com/gin-gonic/gin"
@@ -220,7 +218,11 @@ func (s *MeshServer) build() (*ServiceGroup, error) {
 			grpc.ChainStreamInterceptor(streamInts...),
 		)
 		if grpcReg != nil {
-			grpcSrv.WithRegistrar(grpcReg, opts.ServiceInstanceFor("grpc"))
+			inst, err := opts.ServiceInstanceFor("grpc")
+			if err != nil {
+				return nil, err
+			}
+			grpcSrv.WithRegistrar(grpcReg, inst)
 		}
 		group.Add("grpc", grpcSrv)
 	}
@@ -234,7 +236,11 @@ func (s *MeshServer) build() (*ServiceGroup, error) {
 		}
 		var httpOpts []HTTPOption
 		if httpReg != nil {
-			httpOpts = append(httpOpts, WithRegistrar(httpReg, opts.ServiceInstanceFor("http")))
+			inst, err := opts.ServiceInstanceFor("http")
+			if err != nil {
+				return nil, err
+			}
+			httpOpts = append(httpOpts, WithRegistrar(httpReg, inst))
 		}
 		group.Add("http", NewHTTPServer(opts.Mesh.HTTPAddr, engine, httpOpts...))
 	}
@@ -274,36 +280,24 @@ func (s *MeshServer) resolveEngine() (*gin.Engine, error) {
 	return buildEngine(s.opts, s.services, s.routes)
 }
 
-// buildRegistrarFor resolves the local registration host/port from the listen
-// address matching the given protocol and creates the registrar selected by the
-// registry options. It returns (nil, nil) when the registry type is "none".
+// buildRegistrarFor resolves the address this instance registers under and
+// creates the registrar selected by the registry options. It returns (nil, nil)
+// when the registry type is "none".
+//
+// The advertised host and port come from MeshOptions.AdvertiseAddr, which is
+// also what builds the ServiceInstance's endpoints — so a backend that
+// registers the address (polaris) and one that registers the instance (etcd)
+// publish the same reachable address rather than the listen address.
 func buildRegistrarFor(opts *options.ServerOptions, protocol, addr string) (registry.Registrar, error) {
-	host, port, err := splitHostPort(addr)
+	host, port, err := opts.Mesh.AdvertiseAddr(addr)
 	if err != nil {
-		return nil, fmt.Errorf("parse %s listen address %q: %w", protocol, addr, err)
+		return nil, fmt.Errorf("%s: %w", protocol, err)
 	}
 	registrar, err := opts.Registry.NewRegistrar(host, port, protocol)
 	if err != nil {
 		return nil, fmt.Errorf("build registrar: %w", err)
 	}
 	return registrar, nil
-}
-
-// splitHostPort splits a listen "host:port" address into its components. It uses
-// net.SplitHostPort so it handles bracketed IPv6 literals, which the Nacos
-// backend's local splitHostPort (a LastIndex split for server addresses)
-// intentionally does not. A malformed address or non-numeric port is an error
-// rather than a silent port-0 registration.
-func splitHostPort(addr string) (string, int, error) {
-	host, portStr, err := net.SplitHostPort(addr)
-	if err != nil {
-		return "", 0, err
-	}
-	port, err := strconv.Atoi(portStr)
-	if err != nil {
-		return "", 0, fmt.Errorf("invalid port %q", portStr)
-	}
-	return host, port, nil
 }
 
 // registerServices returns a gRPC registration callback that registers each

@@ -24,6 +24,10 @@ func (b *backend) AddFlags(fs *pflag.FlagSet, prefix string) {
 	fs.StringVar(&b.opts.Kubeconfig, prefix+".kubeconfig", b.opts.Kubeconfig, "Path to kubeconfig; empty uses in-cluster.")
 }
 
+func (b *backend) Decode(raw map[string]any) error {
+	return registry.DecodeOptions(raw, &b.opts)
+}
+
 // NewRegistrar ignores host/port/protocol: Kubernetes registration is a no-op
 // because Pod membership is declared via a Service selector.
 func (b *backend) NewRegistrar(_ string, _ int, _ string) (registry.Registrar, error) {

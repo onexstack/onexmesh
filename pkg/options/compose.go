@@ -6,6 +6,8 @@ package options
 
 import (
 	"fmt"
+	"net"
+	"strconv"
 	"strings"
 
 	"github.com/onexstack/onexmesh/pkg/client"
@@ -15,44 +17,101 @@ import (
 	"github.com/onexstack/onexmesh/pkg/resiliency"
 )
 
-// ServiceInstance builds the registry.ServiceInstance for this service from the
-// mesh listen addresses. Endpoints are advertised exactly as configured, so the
-// addresses should be reachable by clients (avoid "0.0.0.0").
-func (o *ServerOptions) ServiceInstance() *registry.ServiceInstance {
-	inst := &registry.ServiceInstance{Name: o.Mesh.ServiceName}
-	switch o.Mesh.Protocol {
-	case "http":
-		inst.Endpoints = []string{"http://" + o.Mesh.HTTPAddr}
-	case "both":
-		inst.Endpoints = []string{"grpc://" + o.Mesh.GRPCAddr, "http://" + o.Mesh.HTTPAddr}
-	default: // grpc
-		inst.Endpoints = []string{"grpc://" + o.Mesh.GRPCAddr}
+// ServiceInstance builds the registry.ServiceInstance describing this service
+// across every protocol it serves.
+//
+// Endpoints are the advertised addresses, not the listen addresses: see
+// MeshOptions.AdvertiseHost for why the two are not the same and why passing
+// the listen address through publishes an instance nobody can call.
+func (o *ServerOptions) ServiceInstance() (*registry.ServiceInstance, error) {
+	var endpoints []string
+	if ProtocolUsesGRPC(o.Mesh.Protocol) {
+		ep, err := o.endpointFor("grpc", o.Mesh.GRPCAddr)
+		if err != nil {
+			return nil, err
+		}
+		endpoints = append(endpoints, ep)
 	}
-	return inst
+	if ProtocolUsesHTTP(o.Mesh.Protocol) {
+		ep, err := o.endpointFor("http", o.Mesh.HTTPAddr)
+		if err != nil {
+			return nil, err
+		}
+		endpoints = append(endpoints, ep)
+	}
+	inst := o.instance(endpoints)
+	if len(inst.Endpoints) == 0 {
+		return nil, fmt.Errorf("protocol %q serves no endpoint", o.Mesh.Protocol)
+	}
+	return inst, nil
 }
 
 // ServiceInstanceFor builds a single-protocol registry.ServiceInstance for the
 // given protocol, so the gRPC and HTTP servers each register their own endpoint
-// (rather than both advertising the gRPC endpoint). It returns nil when the
-// configured protocol does not include the requested one.
-func (o *ServerOptions) ServiceInstanceFor(protocol string) *registry.ServiceInstance {
-	var endpoint string
+// (rather than both advertising the gRPC endpoint). It returns (nil, nil) when
+// the configured protocol does not include the requested one.
+func (o *ServerOptions) ServiceInstanceFor(protocol string) (*registry.ServiceInstance, error) {
+	var listenAddr string
 	switch protocol {
 	case "grpc":
 		if !ProtocolUsesGRPC(o.Mesh.Protocol) {
-			return nil
+			return nil, nil
 		}
-		endpoint = "grpc://" + o.Mesh.GRPCAddr
+		listenAddr = o.Mesh.GRPCAddr
 	case "http":
 		if !ProtocolUsesHTTP(o.Mesh.Protocol) {
-			return nil
+			return nil, nil
 		}
-		endpoint = "http://" + o.Mesh.HTTPAddr
+		listenAddr = o.Mesh.HTTPAddr
 	default:
-		return nil
+		return nil, nil
 	}
-	return &registry.ServiceInstance{Name: o.Mesh.ServiceName, Endpoints: []string{endpoint}}
+
+	endpoint, err := o.endpointFor(protocol, listenAddr)
+	if err != nil {
+		return nil, err
+	}
+	return o.instance([]string{endpoint}), nil
 }
+
+// endpointFor renders the advertised address of one protocol as a
+// scheme-prefixed endpoint, e.g. "http://10.0.0.7:8180".
+func (o *ServerOptions) endpointFor(protocol, listenAddr string) (string, error) {
+	host, port, err := o.Mesh.AdvertiseAddr(listenAddr)
+	if err != nil {
+		return "", fmt.Errorf("%s: %w", protocol, err)
+	}
+	return protocol + "://" + net.JoinHostPort(host, strconv.Itoa(port)), nil
+}
+
+// instance assembles the instance identity every backend registers: the name, a
+// version, the environment and any extra metadata, plus the endpoints.
+//
+// The metadata is left nil rather than empty when there is nothing to say, so a
+// backend that serializes the instance (etcd) does not write an empty map into
+// the registry for every service.
+func (o *ServerOptions) instance(endpoints []string) *registry.ServiceInstance {
+	inst := &registry.ServiceInstance{
+		Name:      o.Mesh.ServiceName,
+		Version:   o.Mesh.Version,
+		Endpoints: endpoints,
+	}
+
+	if len(o.Mesh.Metadata) > 0 || o.Mesh.Env != "" {
+		inst.Metadata = make(map[string]string, len(o.Mesh.Metadata)+1)
+		for k, v := range o.Mesh.Metadata {
+			inst.Metadata[k] = v
+		}
+		if o.Mesh.Env != "" {
+			inst.Metadata[MetadataKeyEnv] = o.Mesh.Env
+		}
+	}
+	return inst
+}
+
+// MetadataKeyEnv is the instance metadata key carrying MeshOptions.Env. It is
+// exported so a discovery client can filter on it without repeating the literal.
+const MetadataKeyEnv = "env"
 
 // ProtocolUsesGRPC reports whether the protocol includes gRPC.
 func ProtocolUsesGRPC(protocol string) bool {
@@ -65,7 +124,18 @@ func ProtocolUsesHTTP(protocol string) bool {
 }
 
 // BuildMiddleware assembles the server middleware chain, outermost first. The
-// resulting order is recovery -> tracing -> logging -> metrics -> timeout.
+// resulting order is recovery -> tracing -> logging -> metrics -> timeout ->
+// reqval.
+//
+// reqval is appended last, and only when the binary has registered it, because
+// it is owned by the application rather than the framework: the framework cannot
+// import the package that knows a request's default values and rules without
+// depending on every service's IDL. A binary that does not register it — the
+// demos, the tests — gets the chain it had before.
+//
+// It goes last so that a rejection is recorded: the observability middleware
+// above it has already opened its span and started its timer, and a request
+// refused for a malformed page size is one an operator should be able to see.
 func (o *ServerOptions) BuildMiddleware() []middleware.Middleware {
 	mws := []middleware.Middleware{
 		middleware.Recovery(),
@@ -76,8 +146,17 @@ func (o *ServerOptions) BuildMiddleware() []middleware.Middleware {
 	if o.Resilience.Timeout > 0 {
 		mws = append(mws, middleware.Timeout(o.Resilience.Timeout))
 	}
+	if mw, err := middleware.Get(reqvalMiddlewareName); err == nil {
+		mws = append(mws, mw)
+	}
 	return mws
 }
+
+// reqvalMiddlewareName is the registry key of the request defaulting and
+// validation middleware. It is a literal rather than an import because the
+// implementation lives in the application (see internal/pkg/reqval), which
+// depends on this module and not the other way round.
+const reqvalMiddlewareName = "reqval"
 
 // BuildMatcher returns a route-aware matcher when route-level middleware
 // bindings are configured, or (nil, nil) otherwise. The global chain from
