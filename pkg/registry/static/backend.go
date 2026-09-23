@@ -34,13 +34,26 @@ func (b *backend) AddFlags(fs *pflag.FlagSet, prefix string) {
 			"e.g. edu.onex.commerce-apiserver=http://127.0.0.1:8182.")
 }
 
-// Decode fills in the endpoints from a configuration file. A file writes them
-// as a mapping (service -> addresses), which is the natural shape there; the
-// flag form is the "service=address" list above, and NewDiscovery merges the
-// two. A file that uses the flag form instead fails here, naming the option, so
-// the ambiguity costs a startup error rather than a silently empty address list.
+// Decode fills in the endpoints from a configuration file.
+//
+// A file writes them as a mapping — service name to a list of addresses — which
+// is the shape Endpoints already has. The flag form is different on purpose
+// (a repeatable "service=address" list, because a flag has no nesting), and a
+// file that copies it is rejected here.
+//
+// That rejection is worth spelling out rather than leaving to mapstructure:
+// the decoder's own message is "expected type 'map[string][]string', got
+// unconvertible type 'string'", which names the Go type but not the shape
+// anyone should have written, so it costs a round-trip to act on. The mapping
+// form is named explicitly instead.
 func (b *backend) Decode(raw map[string]any) error {
-	return registry.DecodeOptions(raw, &b.opts)
+	if err := registry.DecodeOptions(raw, &b.opts); err != nil {
+		return fmt.Errorf(
+			"endpoints must be a mapping of service name to addresses, e.g. "+
+				"\"endpoints: {edu.onex.commerce-apiserver: [http://127.0.0.1:8182]}\"; "+
+				"the repeatable service=address form is the --registry.static.endpoints flag: %w", err)
+	}
+	return nil
 }
 
 // NewRegistrar returns a Registrar that registers nothing.
