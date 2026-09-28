@@ -3,7 +3,9 @@ cmd/onexmeshctl/onexmeshctl
 examples/helloworld/server/server
 examples/helloworld/client/client
 bin/
-protoc-gen-errno
+# Anchored: unanchored, this also matched cmd/protoc-gen-errno/ and so hid the
+# plugin's source from git, which is why the plugin was never committed.
+/protoc-gen-errno
 
 # Test and coverage artifacts
 *.test
