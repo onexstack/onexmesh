@@ -27,7 +27,13 @@ func Metrics(meter metric.Meter) Middleware {
 	}
 
 	counter, counterErr := meter.Int64Counter("onexmesh.request.count")
-	histogram, histogramErr := meter.Float64Histogram("onexmesh.request.duration")
+	// The unit is declared, not merely implied by the value recorded below. It
+	// travels into the exported name: through the Prometheus exporter the
+	// histogram is `onexmesh_request_duration_seconds_*` rather than a bare
+	// `onexmesh_request_duration_*`, which is the difference between a graph an
+	// operator can read without checking the source and one they have to.
+	histogram, histogramErr := meter.Float64Histogram("onexmesh.request.duration",
+		metric.WithUnit("s"))
 	inflight, inflightErr := meter.Int64UpDownCounter("onexmesh.request.inflight")
 	errCounter, errCounterErr := meter.Int64Counter("onexmesh.request.error.count")
 	if counterErr != nil || histogramErr != nil || inflightErr != nil || errCounterErr != nil {

@@ -16,12 +16,15 @@ import (
 	"sync/atomic"
 	"time"
 
+	"go.opentelemetry.io/otel"
+
 	"github.com/onexstack/onexstack/pkg/errorsx"
 
 	"github.com/onexstack/onexmesh/pkg/codec"
 	"github.com/onexstack/onexmesh/pkg/registry"
 	"github.com/onexstack/onexmesh/pkg/registry/cache"
 	"github.com/onexstack/onexmesh/pkg/selector"
+	"github.com/onexstack/onexmesh/pkg/transport"
 )
 
 // httpOptions holds the options for an HTTP service-discovery client.
@@ -286,6 +289,16 @@ func (c *HTTPClient) do(ctx context.Context, node selector.Node, method, path st
 	// than a missing header, because the server believes the label. See
 	// WithRequestHeaders.
 	applyRequestHeaders(ctx, httpReq)
+	// Then the trace context, so the callee's server span is a child of the span
+	// this call is made under rather than the root of a trace of its own. See
+	// middleware.Tracing for the receiving half and why the absence of this is
+	// invisible inside one service.
+	//
+	// Injected after applyRequestHeaders rather than before, and that order is
+	// the point: a caller-supplied "traceparent" would otherwise win, and the
+	// one header a caller must not be able to forge is the one that decides
+	// which trace their request is attributed to.
+	otel.GetTextMapPropagator().Inject(ctx, transport.NewHTTPHeader(httpReq.Header))
 	if req != nil {
 		httpReq.Header.Set("Content-Type", c.codec.ContentType())
 	}

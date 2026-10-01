@@ -15,9 +15,12 @@ import (
 	"strconv"
 	"strings"
 
+	"go.opentelemetry.io/otel"
+
 	"github.com/onexstack/onexmesh/pkg/registry"
 	"github.com/onexstack/onexmesh/pkg/resilience"
 	"github.com/onexstack/onexmesh/pkg/selector"
+	"github.com/onexstack/onexmesh/pkg/transport"
 )
 
 // meshRoundTripper is an http.RoundTripper that rewrites each request's
@@ -98,6 +101,14 @@ func (t *meshRoundTripper) forward(ctx context.Context, req *http.Request, node 
 	outReq.URL.Host = node.Address()
 	// Drop the Host header so net/http re-derives it from outReq.URL.
 	outReq.Host = ""
+
+	// Carry the caller's trace to the callee, so its server span is a child of
+	// this one rather than the root of a separate trace. Set on the clone rather
+	// than on req, so a caller that reuses the *http.Request across calls (which
+	// client-go does not, but a hand-written caller may) cannot accumulate a
+	// stale traceparent from a previous call. See middleware.Tracing for the
+	// receiving half.
+	otel.GetTextMapPropagator().Inject(ctx, transport.NewHTTPHeader(outReq.Header))
 
 	return t.base.RoundTrip(outReq)
 }

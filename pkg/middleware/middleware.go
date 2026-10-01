@@ -14,6 +14,7 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
+	"go.opentelemetry.io/otel"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/metadata"
 
@@ -67,8 +68,26 @@ func UnaryServerInterceptor(m Middleware) grpc.UnaryServerInterceptor {
 
 // UnaryClientInterceptor bridges a unified Middleware to a gRPC client
 // interceptor, so the same middleware can wrap outbound calls.
+//
+// It carries the caller's trace in the outgoing metadata, which is the gRPC
+// half of what pkg/client's HTTP paths do with a traceparent header: without it
+// the callee's server span is the root of a trace of its own, and one request
+// spanning two services reads as two unrelated traces. See middleware.Tracing.
 func UnaryClientInterceptor(m Middleware) grpc.UnaryClientInterceptor {
 	return func(ctx context.Context, method string, req, reply interface{}, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
+		// Copied and merged rather than replaced: NewOutgoingContext discards
+		// whatever outgoing metadata the caller already attached (an
+		// Authorization pair, say), and a call that silently loses its
+		// credentials is a 401 blamed on the callee.
+		md, ok := metadata.FromOutgoingContext(ctx)
+		if ok {
+			md = md.Copy()
+		} else {
+			md = metadata.MD{}
+		}
+		otel.GetTextMapPropagator().Inject(ctx, transport.NewMetadataHeader(md))
+		ctx = metadata.NewOutgoingContext(ctx, md)
+
 		h := m(func(ctx context.Context, req interface{}) (interface{}, error) {
 			err := invoker(ctx, method, req, reply, cc, opts...)
 			return reply, err
