@@ -107,6 +107,53 @@ func TestSemconvNamesReachPrometheusInTheFormTheDashboardsQuery(t *testing.T) {
 	}
 }
 
+// TestUnregisterDefaultGoCollectorRemovesTheOneInitRegistered closes the loop
+// the test above cannot. That one proves the semantic conventions' Go metrics
+// are exported; this one proves the duplicate names are gone, so a process
+// scraping /metrics sees one set of runtime numbers rather than two.
+//
+// It works on the process's default registry — the one client_golang populates
+// from its own init, and the one an application's /metrics serves — rather than
+// on a private registry, because a private registry would have nothing to
+// remove. The assertion that the collector is there first is not decoration:
+// without it, a change that stopped client_golang registering anything would
+// make this test pass while proving nothing.
+func TestUnregisterDefaultGoCollectorRemovesTheOneInitRegistered(t *testing.T) {
+	if !hasFamily(t, "go_goroutines") {
+		t.Fatal("client_golang's Go collector was not registered to begin with; this test would prove nothing")
+	}
+
+	unregisterDefaultGoCollector()
+
+	if hasFamily(t, "go_goroutines") {
+		t.Error("the redundant Go collector survived; every panel would read one of two copies of the same numbers")
+	}
+	// The process collector must survive: OTel's Go instrumentation has no
+	// counterpart for it, and the memory and CPU panels are built on these.
+	for _, kept := range []string{"process_resident_memory_bytes", "process_cpu_seconds_total", "process_open_fds"} {
+		if !hasFamily(t, kept) {
+			t.Errorf("%s was removed along with the Go collector", kept)
+		}
+	}
+}
+
+// hasFamily reports whether the process's default registry exposes a metric
+// family by name.
+func hasFamily(t *testing.T, name string) bool {
+	t.Helper()
+
+	families, err := promclient.DefaultGatherer.Gather()
+	if err != nil {
+		t.Fatalf("gather: %v", err)
+	}
+	for _, f := range families {
+		if f.GetName() == name {
+			return true
+		}
+	}
+	return false
+}
+
 // scrape renders the registry the way the services serve it, so the assertions
 // are made against what Prometheus would actually read.
 func scrape(t *testing.T, registry *promclient.Registry) string {
