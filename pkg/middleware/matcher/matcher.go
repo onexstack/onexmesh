@@ -3,10 +3,15 @@
 // license that can be found in the LICENSE file.
 
 // Package matcher provides route-level middleware selection: it maps a
-// transport operation (gRPC full method or "METHOD /path") to the middlewares
-// that apply to it, so different endpoints can carry different cross-cutting
-// concerns (e.g. rate limiting only under /admin/*). It is inspired by kratos'
-// internal matcher and is transport-agnostic.
+// transport operation to the middlewares that apply to it, so different
+// endpoints can carry different cross-cutting concerns (e.g. rate limiting only
+// under /admin/*). It is inspired by kratos' internal matcher and is
+// transport-agnostic.
+//
+// An operation is the gRPC full method, or for HTTP the verb and the *route
+// template* ("GET /v1/users/:userID") rather than the request path — so a
+// selector written here keeps matching the route no matter which id is in the
+// request. See transport.Transporter.Operation.
 package matcher
 
 import (

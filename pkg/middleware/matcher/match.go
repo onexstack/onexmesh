@@ -13,7 +13,7 @@ import (
 
 // Match returns a unified Middleware that, per request, selects the middlewares
 // applying to the current transport operation (gRPC full method or "METHOD
-// /path") and chains them around next. It composes with the existing
+// /route/template") and chains them around next. It composes with the existing
 // middleware.UnaryServerInterceptor and middleware.GinHandler bridges, so a
 // single matcher serves both protocols.
 func Match(m *Matcher) middleware.Middleware {

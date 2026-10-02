@@ -14,12 +14,14 @@ import (
 	"sync"
 	"time"
 
+	promclient "github.com/prometheus/client_golang/prometheus"
 	"github.com/spf13/pflag"
+	"go.opentelemetry.io/contrib/instrumentation/runtime"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploggrpc"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
-	"go.opentelemetry.io/otel/exporters/prometheus"
+	otelprom "go.opentelemetry.io/otel/exporters/prometheus"
 	"go.opentelemetry.io/otel/exporters/stdout/stdoutlog"
 	"go.opentelemetry.io/otel/exporters/stdout/stdoutmetric"
 	"go.opentelemetry.io/otel/exporters/stdout/stdouttrace"
@@ -109,6 +111,17 @@ type OTelOptions struct {
 	SamplingRatio float64 `mapstructure:"sampling-ratio"`
 	WithResource  bool    `mapstructure:"with-resource"`
 
+	// DisableDefaultGoCollector removes client_golang's process-wide Go collector
+	// from the default Prometheus registry, so that the OTel runtime
+	// instrumentation is the only source of go.* metrics this process exposes.
+	// It only has an effect in the modes that install the Prometheus exporter.
+	//
+	// Off by default, because turning it on changes what an application's
+	// /metrics already contained: the Go runtime's own metric names disappear and
+	// the semantic conventions' take their place. See unregisterDefaultGoCollector
+	// for what is and is not given up.
+	DisableDefaultGoCollector bool `mapstructure:"disable-default-go-collector"`
+
 	// Output configuration.
 	OutputMode OutputMode `mapstructure:"output-mode"`
 	OutputDir  string     `mapstructure:"output-dir"`
@@ -186,6 +199,8 @@ func (o *OTelOptions) AddFlags(fs *pflag.FlagSet, fullPrefix string) {
 	fs.BoolVar(&o.Insecure, fullPrefix+".insecure", o.Insecure, "Use insecure connection.")
 	fs.Float64Var(&o.SamplingRatio, fullPrefix+".sampling-ratio", o.SamplingRatio, "Sampling ratio (0.0-1.0).")
 	fs.BoolVar(&o.WithResource, fullPrefix+".with-resource", o.WithResource, "Include system resource information.")
+	fs.BoolVar(&o.DisableDefaultGoCollector, fullPrefix+".disable-default-go-collector", o.DisableDefaultGoCollector,
+		"Remove client_golang's default Go collector so the OTel runtime metrics are the only go.* source.")
 	fs.Var((*outputModeFlag)(&o.OutputMode), fullPrefix+".output-mode", "Output mode: otel, file, console, classic, hybrid.")
 	fs.StringVar(&o.OutputDir, fullPrefix+".output-dir", o.OutputDir, "Output directory for file mode.")
 	fs.StringVar(&o.Level, fullPrefix+".level", o.Level, "Log level: debug, info, warn, error.")
@@ -299,7 +314,10 @@ func (o *OTelOptions) initMetrics(ctx context.Context) error {
 
 	switch o.OutputMode {
 	case OutputModeClassic, OutputModeHybrid:
-		reader, err = prometheus.New()
+		reader, err = otelprom.New()
+		if o.DisableDefaultGoCollector {
+			unregisterDefaultGoCollector()
+		}
 	case OutputModeOTLP:
 		opts := []otlpmetricgrpc.Option{otlpmetricgrpc.WithEndpoint(o.Endpoint)}
 		if o.Insecure {
@@ -331,7 +349,62 @@ func (o *OTelOptions) initMetrics(ctx context.Context) error {
 
 	o.providers.meter = mp
 	otel.SetMeterProvider(mp)
+
+	// Go runtime metrics (go.goroutine.count, go.memory.used, go.memory.gc.goal,
+	// go.processor.limit, go.schedule.duration, …).
+	//
+	// They are registered per MeterProvider rather than once per process, so they
+	// follow the provider this call just installed — and a Shutdown of that
+	// provider stops them. A failure here is not fatal to the service: the
+	// application's own metrics are unaffected, and the operator finds out from
+	// the missing series rather than from a service that will not start.
+	if err := runtime.Start(runtime.WithMeterProvider(mp)); err != nil {
+		slog.Error("failed to start Go runtime metrics", "err", err)
+	}
+
 	return nil
+}
+
+// unregisterDefaultGoCollector removes client_golang's process-wide Go collector
+// from the default registry, so that the OTel runtime instrumentation above is
+// the only source of Go runtime metrics on this process's /metrics.
+//
+// # Why one source and not two
+//
+// Both collectors describe the same runtime, so running both is not twice the
+// information — it is the same numbers under two names, go_memory_used_bytes
+// beside go_memstats_heap_alloc_bytes and go_goroutine_count beside
+// go_goroutines. Every panel then has to pick one, and the other is a series
+// that is scraped, stored and never read.
+//
+// # What is given up, because it is not nothing
+//
+// client_golang's collector is the larger of the two: it also reports the
+// scheduler latency histogram, the memory-class breakdown, mutex and GC pauses,
+// and the /godebug counters. OTel's Go instrumentation covers the semconv set
+// and stops there. Turning this on is a deliberate trade of that detail for a
+// single, spec-named source — which is why it is an option rather than the
+// default, and why flipping it back is a configuration change and not a
+// rebuild.
+//
+// # What is deliberately kept
+//
+// Only the Go collector goes. The process collector stays, because OTel's Go
+// instrumentation does not replace it — contrib's runtime package covers go.*
+// and nothing else — and removing it would delete
+// process_resident_memory_bytes, process_cpu_seconds_total and process_open_fds,
+// which is where every memory and CPU panel gets its numbers.
+//
+// Unregister matches on descriptor identity rather than on the pointer, so a
+// fresh equivalent collector is what removes the instance client_golang's init
+// registered. A false return means it was not registered: a binary that never
+// linked client_golang, or a second Apply on the same process. Neither is an
+// error worth failing a service start over, so it is logged for the case where
+// it is a surprise.
+func unregisterDefaultGoCollector() {
+	if !promclient.Unregister(promclient.NewGoCollector()) {
+		slog.Debug("client_golang's default Go collector was not registered; nothing to remove")
+	}
 }
 
 // initLogs initializes logging.

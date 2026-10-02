@@ -17,6 +17,7 @@ import (
 
 	"go.opentelemetry.io/otel"
 
+	"github.com/onexstack/onexmesh/pkg/client/internal/clientspan"
 	"github.com/onexstack/onexmesh/pkg/registry"
 	"github.com/onexstack/onexmesh/pkg/resilience"
 	"github.com/onexstack/onexmesh/pkg/selector"
@@ -91,6 +92,24 @@ func (t *meshRoundTripper) nodes(ctx context.Context) ([]selector.Node, error) {
 // forward rewrites the request URL to the selected node and delegates to the
 // base transport, preserving the request context for cancellation.
 func (t *meshRoundTripper) forward(ctx context.Context, req *http.Request, node selector.Node) (*http.Response, error) {
+	// The span is opened before the clone and before the injection, so the
+	// traceparent the callee receives names this span rather than its parent.
+	// See clientspan.Start, which is shared with the non-REST path so the two
+	// cannot describe the same hop differently.
+	ctx, span := clientspan.Start(ctx, req.Method, node.Address(), req.URL.Path)
+
+	resp, err := t.roundTrip(ctx, req, node)
+	if err != nil {
+		clientspan.Finish(span, 0, err)
+		return nil, err
+	}
+	clientspan.Finish(span, resp.StatusCode, nil)
+	return resp, nil
+}
+
+// roundTrip is forward's body, split out so the span above can wrap every exit
+// with a single deferred finish instead of one per return.
+func (t *meshRoundTripper) roundTrip(ctx context.Context, req *http.Request, node selector.Node) (*http.Response, error) {
 	outReq := req.Clone(ctx)
 
 	scheme := node.Scheme()

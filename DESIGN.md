@@ -311,3 +311,21 @@ gin/grpc（含 streaming）。业务函数则经 `middleware.HTTPHandler` 桥实
 `pkg/options/otel_options.go` 支持五态输出（`otel`/`file`/`console`/`classic`/`hybrid`），
 三信号（trace/metric/log）统一接入 OTel，log 经 `pkg/otelslog` 桥接，`TraceIDHandler`
 在 slog 记录中注入 trace/span id，实现 trace↔log 关联。
+
+中间件侧的指标与打点一律使用 OTel 语义约定的名字，命名与取值集中在
+`pkg/middleware/semconv.go`，由 tracing 与 metrics 两个中间件共用，避免同一次请求在两个
+目的地被描述成两回事：
+
+- HTTP 服务端 `http.server.request.duration`、`http.server.active_requests`；
+  gRPC 服务端 `rpc.server.call.duration`。属性为约定规定的集合，失败时另挂
+  `onex.error.reason`（平台的 `errorsx.Reason`），标准 `error.type` 保持规范取值。
+- HTTP 的 operation 与 `http.route` 取**路由模板**（gin `FullPath()`），不是请求路径：
+  路径参数会让标签基数随业务数据无界增长。原始路径只作为 span 的 `url.path`。
+- span 的 status 按约定只对 5xx / 非 OK 的 gRPC code 置 Error，4xx 不置；span 名同理为
+  `{method} {route}`，无路由时为 `{method} unmatched`。
+- 出向调用补 client span：gRPC 由 `middleware.NewClientTracingInterceptor`（`pkg/client`
+  默认安装），HTTP 由 `pkg/client/internal/clientspan` 供 `pkg/client` 与
+  `pkg/client/rest` 共用。
+- Go 运行时指标由 `contrib/instrumentation/runtime` 提供；`otel.disable-default-go-collector`
+  可注销 client_golang 默认的 Go collector，避免同一份数据出两套名字（进程指标不受影响，
+  OTel Go 侧没有对应实现）。

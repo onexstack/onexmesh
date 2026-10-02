@@ -9,6 +9,7 @@ import (
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 
 	"github.com/onexstack/onexmesh/pkg/transport"
 )
@@ -36,8 +37,12 @@ func StreamServerInterceptor(m Middleware) grpc.StreamServerInterceptor {
 		ctx := transport.NewServerContext(ss.Context(), tr)
 		wrapped := &wrappedServerStream{ServerStream: ss, ctx: ctx}
 
+		// Recorded at the innermost point for the reason given in
+		// UnaryServerInterceptor: the chain unwinds before the interceptor
+		// regains control, so a status written afterwards is read by nobody.
 		h := m(func(ctx context.Context, req interface{}) (interface{}, error) {
 			err := handler(srv, wrapped)
+			tr.SetGRPCCode(status.Code(err))
 			return nil, err
 		})
 		_, err := h(ctx, srv)

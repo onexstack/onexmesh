@@ -20,6 +20,7 @@ import (
 
 	"github.com/onexstack/onexstack/pkg/errorsx"
 
+	"github.com/onexstack/onexmesh/pkg/client/internal/clientspan"
 	"github.com/onexstack/onexmesh/pkg/codec"
 	"github.com/onexstack/onexmesh/pkg/registry"
 	"github.com/onexstack/onexmesh/pkg/registry/cache"
@@ -262,8 +263,28 @@ func (c *HTTPClient) Do(ctx context.Context, method, path string, req, resp inte
 	return doOnce(ctx)
 }
 
-// do performs a single HTTP request against the selected node.
+// do performs a single HTTP request against the selected node, and draws it as
+// a client span.
+//
+// The span is per attempt, not per logical call: Do's resilience wrapper retries
+// by calling this again, so a request that needed three tries is three spans
+// under one caller. That is deliberate — the caller's own span already answers
+// "how long did this take", and the question a retry raises is a different one,
+// which only the per-attempt spans can answer.
 func (c *HTTPClient) do(ctx context.Context, node selector.Node, method, path string, req, resp interface{}) error {
+	// Opened before the request is constructed, so that the traceparent injected
+	// in exchange makes the callee's server span a child of this span rather than
+	// its sibling. See clientspan.Start.
+	ctx, span := clientspan.Start(ctx, method, node.Address(), path)
+
+	status, err := c.exchange(ctx, node, method, path, req, resp)
+	clientspan.Finish(span, status, err)
+	return err
+}
+
+// exchange performs the request and reports the response status, or 0 when no
+// response was received.
+func (c *HTTPClient) exchange(ctx context.Context, node selector.Node, method, path string, req, resp interface{}) (int, error) {
 	scheme := node.Scheme()
 	if scheme == "" {
 		// A scheme-less endpoint is assumed to be plain HTTP.
@@ -275,14 +296,14 @@ func (c *HTTPClient) do(ctx context.Context, node selector.Node, method, path st
 	if req != nil {
 		b, err := c.codec.Marshal(req)
 		if err != nil {
-			return err
+			return 0, err
 		}
 		body = bytes.NewReader(b)
 	}
 
 	httpReq, err := http.NewRequestWithContext(ctx, method, url, body)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	// Caller-supplied headers first, so the codec's Content-Type below overwrites
 	// any of them: a body encoded by one codec and labelled as another is worse
@@ -305,7 +326,7 @@ func (c *HTTPClient) do(ctx context.Context, node selector.Node, method, path st
 
 	httpResp, err := c.httpClient.Do(httpReq)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	defer httpResp.Body.Close()
 
@@ -313,16 +334,16 @@ func (c *HTTPClient) do(ctx context.Context, node selector.Node, method, path st
 		// Return a typed ErrorX carrying the HTTP status so the shared resilience
 		// classifiers (grpcAcceptable/grpcRetryable) can treat HTTP failures by
 		// status code, not just gRPC statuses.
-		return errorsx.New(httpResp.StatusCode, http.StatusText(httpResp.StatusCode), "HTTP request failed with status %d", httpResp.StatusCode)
+		return httpResp.StatusCode, errorsx.New(httpResp.StatusCode, http.StatusText(httpResp.StatusCode), "HTTP request failed with status %d", httpResp.StatusCode)
 	}
 	if resp != nil {
 		data, err := io.ReadAll(httpResp.Body)
 		if err != nil {
-			return err
+			return httpResp.StatusCode, err
 		}
-		return c.codec.Unmarshal(data, resp)
+		return httpResp.StatusCode, c.codec.Unmarshal(data, resp)
 	}
-	return nil
+	return httpResp.StatusCode, nil
 }
 
 // instancesToNodes converts discovered instances into selector nodes, keeping

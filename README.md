@@ -18,7 +18,7 @@ OneXMesh 是一个高性能、可扩展的 Go 微服务框架，统一了 gRPC �
 - **韧性**：滑动窗口熔断、自适应降载、重试、对冲（backup request）、超时，作为可组合的 middleware，已接入 gRPC 与 HTTP 客户端。
 - **限流**：本地令牌桶/漏桶/并发限流 + 分布式 `ratelimit.Store`（内存/Redis 双实现），带本地兜底与三态窗口限流。
 - **统一错误体系**：复用 `onexstack/pkg/errorsx` 的 `ErrorX{Code/Reason/Message/Metadata}`，`pkg/errno` 定义框架级哨兵错误，`GRPCStatus()` 与 gin 桥保证 HTTP/gRPC 错误语义一致。
-- **路由级中间件**：`middleware/matcher` 按 operation（gRPC 方法或 `METHOD /path`）为不同接口挂不同中间件。
+- **路由级中间件**：`middleware/matcher` 按 operation（gRPC 方法，或 HTTP 的 `METHOD /路由模板`）为不同接口挂不同中间件。
 - **可观测**：标准 OpenTelemetry trace/metric/log（otel/file/console/classic/hybrid 五态）+ log/slog（TraceIDHandler 关联 trace）。
 - **事件总线**：`event` 进程内发布订阅 + 有界队列，用于解耦（如发现变更联动熔断清理）。
 - **core 基础组件**：`collection`（RollingWindow/TimingWheel/SafeMap/Set）、`syncx`（SingleFlight/SpinLock）、`mr`（泛型 MapReduce）、`contextx`（ValueOnlyFrom）、`timex`（Ticker/FakeTicker）。

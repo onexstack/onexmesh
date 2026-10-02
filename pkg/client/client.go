@@ -13,6 +13,7 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 
 	"github.com/onexstack/onexmesh/pkg/client/balancer"
+	"github.com/onexstack/onexmesh/pkg/middleware"
 	"github.com/onexstack/onexmesh/pkg/registry"
 	"github.com/onexstack/onexmesh/pkg/registry/cache"
 )
@@ -85,7 +86,18 @@ func commonDialOpts(o *dialOptions, serviceName string) []grpc.DialOption {
 		opts = append(opts, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	}
 
-	var unaryInts []grpc.UnaryClientInterceptor
+	// Outermost, so that the client span measures the call the caller made rather
+	// than its last attempt: with the tracing interceptor inside the resilience
+	// chain, a request retried three times would be three spans and a caller
+	// asking "how long did this take" would have to add them up themselves.
+	//
+	// Installed by default, not left to the caller, because the HTTP half of the
+	// same propagation already is: pkg/client's HTTP paths inject a traceparent
+	// inside Do/RoundTrip with no opt-in. A gRPC client that stayed silent unless
+	// someone remembered WithUnaryInterceptor would make one request across two
+	// transports read as one trace and one broken one.
+	unaryInts := []grpc.UnaryClientInterceptor{middleware.NewClientTracingInterceptor()}
+
 	if o.resiliency != nil {
 		// Declarative resilience takes precedence over the imperative options.
 		unaryInts = append(unaryInts, buildResiliencyInterceptor(o.resiliency, serviceName))
@@ -93,9 +105,7 @@ func commonDialOpts(o *dialOptions, serviceName string) []grpc.DialOption {
 		unaryInts = append(unaryInts, buildResilienceInterceptors(o.resilience)...)
 	}
 	unaryInts = append(unaryInts, o.unaryInts...)
-	if len(unaryInts) > 0 {
-		opts = append(opts, grpc.WithChainUnaryInterceptor(unaryInts...))
-	}
+	opts = append(opts, grpc.WithChainUnaryInterceptor(unaryInts...))
 
 	return append(opts, o.grpcOpts...)
 }
