@@ -60,6 +60,25 @@ func (l *PeriodLimit) Take(key string) (int, error) {
 
 // TakeCtx is Take with a context.
 func (l *PeriodLimit) TakeCtx(ctx context.Context, key string) (int, error) {
+	return l.TakeCtxQuota(ctx, key, l.quota)
+}
+
+// TakeCtxQuota is TakeCtx with the allowance supplied by the caller instead of
+// the one the limiter was built with.
+//
+// # What is per-call and what is not
+//
+// Only the **comparison** moves. The counter is still `keyPrefix + key` and its
+// TTL is still the period the limiter was constructed with, both unchanged by
+// this argument — so calling this with a different quota against the same key
+// reads and increments the *same* counter. That is the whole point: raising an
+// allowance for one caller must not hand them a fresh window, which is what
+// would happen if the quota were folded into the key.
+//
+// It exists for a limiter whose allowance is per-caller (a per-user override
+// resolved before each request) and which therefore cannot fix the number at
+// construction. A caller with a fixed allowance should keep using TakeCtx.
+func (l *PeriodLimit) TakeCtxQuota(ctx context.Context, key string, quota int) (int, error) {
 	k := l.keyPrefix + key
 	if l.align {
 		sec := int64(l.period.Seconds())
@@ -75,9 +94,9 @@ func (l *PeriodLimit) TakeCtx(ctx context.Context, key string) (int, error) {
 	}
 
 	switch {
-	case count > int64(l.quota):
+	case count > int64(quota):
 		return OverQuota, nil
-	case count == int64(l.quota):
+	case count == int64(quota):
 		return HitQuota, nil
 	default:
 		return Allowed, nil

@@ -94,6 +94,16 @@ func (r *reader) Source() ([]byte, error) {
 	return json.Marshal(r.values)
 }
 
+// Map returns a deep copy of the merged configuration, for the same reason
+// Value does: without the copy, a caller holding the result would observe a
+// concurrent merge from a background Watch.
+func (r *reader) Map() map[string]any {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	out, _ := deepCopyValue(r.values).(map[string]any)
+	return out
+}
+
 // lookup walks a dot-separated path through a nested map.
 func lookup(m map[string]any, path string) any {
 	if path == "" {

@@ -19,7 +19,11 @@ import (
 
 // Options configures the Polaris config center Source.
 type Options struct {
-	// Addresses are the Polaris server addresses, e.g. ["127.0.0.1:8093"].
+	// Addresses are the Polaris config center addresses, e.g. ["10.0.0.1:8093"].
+	//
+	// These are the *config* connector's addresses. They are not the service
+	// discovery addresses (8091) the registry backend uses: a Polaris server
+	// listens for config on its own port, 8093 by default.
 	Addresses []string
 	// Namespace is the config file namespace.
 	Namespace string
@@ -29,6 +33,9 @@ type Options struct {
 	FileName string
 	// Format is the config file format; empty defaults to yaml.
 	Format string
+	// Token is the access token the config connector authenticates with. Empty
+	// means no token is sent, which is what a server without auth expects.
+	Token string
 }
 
 func init() {
@@ -47,18 +54,70 @@ type source struct {
 	api  api.ConfigFileAPI
 }
 
+// newConfigFileAPI is the SDK constructor, indirected through a variable so
+// tests can substitute a fake and exercise Load/Watch without a running Polaris.
+var newConfigFileAPI = api.NewConfigFileAPIByConfig
+
 // New creates a Polaris config Source.
+//
+// The addresses are applied to the *config* connector. This matters because
+// NewDefaultConfiguration only writes global.serverConnector.addresses — the
+// service-discovery connector — while config.configConnector.addresses carries
+// its own default of 127.0.0.1:8093 (pkg/config/default.go
+// DefaultConfigConnectorAddresses). Passing the addresses to
+// NewDefaultConfiguration therefore configured discovery and left every config
+// fetch pointed at localhost, which fails as a timeout that names no cause.
+//
+// NewDefaultConfiguration(nil) is used rather than the WithDomain variant: the
+// latter loads ./polaris.yaml from the working directory when one happens to
+// exist, so the effective configuration would depend on where the process was
+// started.
 func New(opts Options) (config.Source, error) {
-	cfg := polarisconfig.NewDefaultConfiguration(opts.Addresses)
-	fileAPI, err := api.NewConfigFileAPIByConfig(cfg)
+	cfg := polarisconfig.NewDefaultConfiguration(nil)
+
+	connector := cfg.GetConfigFile().GetConfigConnectorConfig()
+	if len(opts.Addresses) > 0 {
+		connector.SetAddresses(opts.Addresses)
+	}
+	if opts.Token != "" {
+		connector.SetToken(opts.Token)
+	}
+
+	fileAPI, err := newConfigFileAPI(cfg)
 	if err != nil {
 		return nil, err
 	}
 	return &source{opts: opts, api: fileAPI}, nil
 }
 
+// Destroy releases the SDK context this source created, including its
+// connections and its background tasks. It is not part of config.Source
+// because most sources hold nothing to release; callers reach it through a type
+// assertion. A caller that reloads configuration must call it on the source it
+// is replacing, or every reload leaks a context.
+func (s *source) Destroy() {
+	if s.api == nil {
+		return
+	}
+	if ctx := s.api.SDKContext(); ctx != nil && !ctx.IsDestroyed() {
+		ctx.Destroy()
+	}
+}
+
 func (s *source) Load() ([]*config.KeyValue, error) {
-	file, err := s.api.GetConfigFile(s.opts.Namespace, s.opts.FileGroup, s.opts.FileName)
+	// FetchConfigFile with Subscribe false, rather than the GetConfigFile
+	// shorthand: the shorthand forces Subscribe true, which would start a
+	// subscription that Load's caller never asked for and never releases. A
+	// reload that calls Load repeatedly would accumulate one subscription per
+	// reload. Watch() subscribes explicitly.
+	file, err := s.api.FetchConfigFile(&api.GetConfigFileRequest{
+		GetConfigFileRequest: &model.GetConfigFileRequest{
+			Namespace: s.opts.Namespace,
+			FileGroup: s.opts.FileGroup,
+			FileName:  s.opts.FileName,
+			Subscribe: false,
+		},
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -70,7 +129,15 @@ func (s *source) Load() ([]*config.KeyValue, error) {
 }
 
 func (s *source) Watch() (config.Watcher, error) {
-	file, err := s.api.GetConfigFile(s.opts.Namespace, s.opts.FileGroup, s.opts.FileName)
+	// Subscribe true: unlike Load, watching is the whole point here.
+	file, err := s.api.FetchConfigFile(&api.GetConfigFileRequest{
+		GetConfigFileRequest: &model.GetConfigFileRequest{
+			Namespace: s.opts.Namespace,
+			FileGroup: s.opts.FileGroup,
+			FileName:  s.opts.FileName,
+			Subscribe: true,
+		},
+	})
 	if err != nil {
 		return nil, err
 	}

@@ -16,11 +16,17 @@ import (
 // satisfies the app.FlagSetOptions contract (AddFlags without prefix and
 // Validate returning a single error) so it can be passed directly to app.
 type ServerOptions struct {
-	Mesh       *MeshOptions       `mapstructure:"mesh"`
-	Slog       *SlogOptions       `mapstructure:"log"`
-	OTel       *OTelOptions       `mapstructure:"otel"`
-	Registry   *RegistryOptions   `mapstructure:"registry"`
-	Config     *ConfigOptions     `mapstructure:"-"`
+	Mesh     *MeshOptions     `mapstructure:"mesh"`
+	Slog     *SlogOptions     `mapstructure:"log"`
+	OTel     *OTelOptions     `mapstructure:"otel"`
+	Registry *RegistryOptions `mapstructure:"registry"`
+	// Config is the remote configuration source. It is read from `config-source`
+	// rather than from `config`, which would be unreadable: the application
+	// binds its own --config flag, and viper resolves a nested key under a name
+	// that also names a bound flag to nil (isPathShadowedInFlatMap). Every
+	// config.* setting would read as empty, before the config file was even
+	// consulted.
+	Config     *ConfigOptions     `mapstructure:"config-source"`
 	Selector   *SelectorOptions   `mapstructure:"selector"`
 	Resilience *ResilienceOptions `mapstructure:"resilience"`
 }
@@ -44,7 +50,7 @@ func (o *ServerOptions) AddFlags(fs *pflag.FlagSet) {
 	o.Slog.AddFlags(fs, "log")
 	o.OTel.AddFlags(fs, "otel")
 	o.Registry.AddFlags(fs, "registry")
-	o.Config.AddFlags(fs, "config")
+	o.Config.AddFlags(fs, "config-source")
 	o.Selector.AddFlags(fs, "selector")
 	o.Resilience.AddFlags(fs, "resilience")
 }
@@ -53,12 +59,16 @@ func (o *ServerOptions) AddFlags(fs *pflag.FlagSet) {
 // It runs after flags are bound and the config file is unmarshaled, and before
 // Validate — so a setting that will be rejected is first put in its final form.
 //
-// The registry layer needs it because a backend's typed Options is not a field
-// of these options: the values a file carries under registry.<name>.* are
-// collected into RegistryOptions.Options and have to be handed to the backend
-// that understands them. See RegistryOptions.Complete.
+// The registry and config-source layers need it because a backend's typed
+// Options is not a field of these options: the values a file carries under
+// registry.<name>.* and config-source.<name>.* are collected into the
+// respective Options maps and have to be handed to the backend that understands
+// them. See RegistryOptions.Complete and ConfigOptions.Complete.
 func (o *ServerOptions) Complete() error {
 	if err := o.Registry.Complete(); err != nil {
+		return err
+	}
+	if err := o.Config.Complete(); err != nil {
 		return err
 	}
 	o.deriveOTelIdentity()

@@ -39,6 +39,52 @@ func TestStoreIncrWindow(t *testing.T) {
 	}
 }
 
+func TestStoreGiveBackWindow(t *testing.T) {
+	s := memory.New()
+	ctx := context.Background()
+
+	for i := int64(1); i <= 3; i++ {
+		if _, err := s.IncrWindow(ctx, "k", time.Minute); err != nil {
+			t.Fatalf("IncrWindow = %v", err)
+		}
+	}
+	if err := s.GiveBackWindow(ctx, "k"); err != nil {
+		t.Fatalf("GiveBackWindow = %v", err)
+	}
+	if n, ok, err := s.PeekWindow(ctx, "k"); err != nil || !ok || n != 2 {
+		t.Fatalf("PeekWindow after one give-back = (%d, %v, %v), want 2", n, ok, err)
+	}
+
+	// Two more give-backs spend the rest, and a third must not go negative: the
+	// next window would otherwise start with a free request.
+	for i := 0; i < 3; i++ {
+		if err := s.GiveBackWindow(ctx, "k"); err != nil {
+			t.Fatalf("GiveBackWindow = %v", err)
+		}
+	}
+	if n, ok, err := s.PeekWindow(ctx, "k"); err != nil || !ok || n != 0 {
+		t.Fatalf("PeekWindow after draining = (%d, %v, %v), want 0", n, ok, err)
+	}
+}
+
+func TestStoreGiveBackWindowLeavesAnExpiredWindowAlone(t *testing.T) {
+	s := memory.New()
+	ctx := context.Background()
+
+	if _, err := s.IncrWindow(ctx, "k", time.Millisecond); err != nil {
+		t.Fatalf("IncrWindow = %v", err)
+	}
+	time.Sleep(5 * time.Millisecond)
+
+	if err := s.GiveBackWindow(ctx, "k"); err != nil {
+		t.Fatalf("GiveBackWindow = %v", err)
+	}
+	// The next request starts a fresh window at 1, not at 0 or -1.
+	if n, err := s.IncrWindow(ctx, "k", time.Minute); err != nil || n != 1 {
+		t.Fatalf("IncrWindow after an expired give-back = (%d, %v), want 1", n, err)
+	}
+}
+
 func TestStorePingAndClose(t *testing.T) {
 	s := memory.New()
 	if err := s.Ping(context.Background()); err != nil {

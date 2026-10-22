@@ -43,8 +43,16 @@ type Reader interface {
 	Merge(kvs ...*KeyValue) error
 	// Value returns the value at a dot-separated path, e.g. "a.b.c".
 	Value(path string) Value
-	// Source returns the merged raw bytes.
+	// Source returns the merged configuration as JSON bytes.
 	Source() ([]byte, error)
+	// Map returns the merged configuration as a nested map.
+	//
+	// It exists alongside Source because JSON has a single number type: a value
+	// written as an integer comes back from Source as a float64 and then needs
+	// weakly-typed decoding to land in an int field. A caller that is going to
+	// decode the result itself, or hand it to something that will, should take
+	// the map and keep the types the source declared.
+	Map() map[string]any
 }
 
 // Value provides typed access to a configuration value.

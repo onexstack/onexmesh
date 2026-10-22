@@ -46,6 +46,16 @@ func newGinEngine(opts *options.ServerOptions) (*gin.Engine, error) {
 	for _, m := range mws {
 		engine.Use(middleware.GinHandler(m))
 	}
+	// Compression goes innermost, inside the observability chain rather than
+	// around it: it wraps only the bytes a handler writes, while the
+	// transporters above it keep reading status and headers the way they do for
+	// a handler that writes plainly. Putting it outside would make the chain's
+	// own bookkeeping run through the compressor for no benefit.
+	//
+	// It is unconditional, and does not need an option to be safe: it compresses
+	// only when the request asks for gzip, and never when the response is an SSE
+	// stream. See middleware.Compress.
+	engine.Use(middleware.Compress())
 	meshEngines.Store(engine, struct{}{})
 	return engine, nil
 }

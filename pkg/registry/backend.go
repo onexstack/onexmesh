@@ -7,10 +7,10 @@ package registry
 import (
 	"fmt"
 	"sort"
-	"strings"
 
-	"github.com/go-viper/mapstructure/v2"
 	"github.com/spf13/pflag"
+
+	"github.com/onexstack/onexmesh/pkg/config"
 )
 
 // Backend is a self-describing registry backend. It contributes its own CLI
@@ -48,38 +48,12 @@ type Backend interface {
 // backend gains file configuration with one line rather than a hand-written
 // field mapping per option.
 //
-// The matcher ignores case and hyphens, so the YAML key "dial-timeout" and the
-// Go field DialTimeout are the same option. Without that every multi-word option
-// would decode to nothing and leave its default in place — a failure with no
-// symptom, since the service starts and merely ignores what it was configured
-// with. That is the same shape of mistake this layer exists to remove.
-//
-// The decoder config mirrors viper's, so a value written in a config file
-// behaves here as it does everywhere else in the application: a number or a
-// boolean may arrive as a string, and a duration may be written "10s".
+// The decoding rules — case- and hyphen-blind matching, weakly typed input,
+// duration and comma-separated-slice hooks — live in config.DecodeOptions,
+// which the config-source backends use as well: two copies of plumbing this
+// subtle would be two places for the same silent-ignore bug to reappear.
 func DecodeOptions(raw map[string]any, out any) error {
-	dec, err := mapstructure.NewDecoder(&mapstructure.DecoderConfig{
-		Result:           out,
-		WeaklyTypedInput: true,
-		DecodeHook: mapstructure.ComposeDecodeHookFunc(
-			mapstructure.StringToTimeDurationHookFunc(),
-			mapstructure.StringToSliceHookFunc(","),
-		),
-		MatchName: func(mapKey, fieldName string) bool {
-			return normalizeKey(mapKey) == normalizeKey(fieldName)
-		},
-	})
-	if err != nil {
-		return err
-	}
-	return dec.Decode(raw)
-}
-
-// normalizeKey folds a key to the form DecodeOptions' matcher compares on:
-// case-insensitive and hyphen-blind, so "port-name", "portname" and PortName
-// all agree.
-func normalizeKey(s string) string {
-	return strings.ToLower(strings.ReplaceAll(s, "-", ""))
+	return config.DecodeOptions(raw, out)
 }
 
 // BackendFactory constructs a Backend with its default Options.

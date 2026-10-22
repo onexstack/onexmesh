@@ -8,6 +8,7 @@ package redis
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -15,7 +16,11 @@ import (
 	"github.com/onexstack/onexmesh/pkg/ratelimit"
 )
 
-var _ ratelimit.Store = (*Store)(nil)
+var (
+	_ ratelimit.Store        = (*Store)(nil)
+	_ ratelimit.WindowReader = (*Store)(nil)
+	_ ratelimit.WindowGiver  = (*Store)(nil)
+)
 
 // tokenScript atomically refills and consumes a token bucket. KEYS[1] holds the
 // current token count, KEYS[2] the last-refill timestamp (unix ms). ARGV are
@@ -59,19 +64,32 @@ end
 return current
 `
 
+// giveBackScript returns one to a window counter, never below zero. DECR keeps
+// the key's existing TTL, so a give-back does not extend the window it belongs
+// to — and a key that has already expired is left expired rather than recreated.
+const giveBackScript = `
+local current = tonumber(redis.call("GET", KEYS[1]))
+if current == nil or current <= 0 then
+    return 0
+end
+return redis.call("DECR", KEYS[1])
+`
+
 // Store is a Redis-backed Store.
 type Store struct {
-	client       redis.UniversalClient
-	tokenScript  *redis.Script
-	windowScript *redis.Script
+	client         redis.UniversalClient
+	tokenScript    *redis.Script
+	windowScript   *redis.Script
+	giveBackScript *redis.Script
 }
 
 // New returns a Store backed by client.
 func New(client redis.UniversalClient) *Store {
 	return &Store{
-		client:       client,
-		tokenScript:  redis.NewScript(tokenScript),
-		windowScript: redis.NewScript(windowScript),
+		client:         client,
+		tokenScript:    redis.NewScript(tokenScript),
+		windowScript:   redis.NewScript(windowScript),
+		giveBackScript: redis.NewScript(giveBackScript),
 	}
 }
 
@@ -98,6 +116,33 @@ func (s *Store) IncrWindow(ctx context.Context, key string, window time.Duration
 		ttl = 1
 	}
 	return s.windowScript.Run(ctx, s.client, []string{key}, ttl).Int64()
+}
+
+// PeekWindow implements ratelimit.WindowReader: the window counter as it stands.
+//
+// A missing key is "no requests counted in this window", which is what the
+// counter's own TTL makes it: IncrWindow sets the expiry on the first increment,
+// so a key that is gone is a window that ended.
+func (s *Store) PeekWindow(ctx context.Context, key string) (int64, bool, error) {
+	n, err := s.client.Get(ctx, key).Int64()
+	switch {
+	case errors.Is(err, redis.Nil):
+		return 0, false, nil
+	case err != nil:
+		return 0, false, err
+	}
+	return n, true, nil
+}
+
+// GiveBackWindow implements ratelimit.WindowGiver: return one count to the
+// window, never below zero.
+//
+// The decrement is its own script rather than a read-and-set so that two
+// replicas giving a count back at the same moment cannot lose one of the two.
+// DECR keeps the TTL, which is what makes a give-back land in the window it was
+// charged in rather than extending it.
+func (s *Store) GiveBackWindow(ctx context.Context, key string) error {
+	return s.giveBackScript.Run(ctx, s.client, []string{key}).Err()
 }
 
 // tokenTTLMillis returns a key TTL in milliseconds for a token bucket. It is

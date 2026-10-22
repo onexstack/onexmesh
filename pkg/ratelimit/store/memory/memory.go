@@ -14,7 +14,11 @@ import (
 	"github.com/onexstack/onexmesh/pkg/ratelimit"
 )
 
-var _ ratelimit.Store = (*Store)(nil)
+var (
+	_ ratelimit.Store        = (*Store)(nil)
+	_ ratelimit.WindowReader = (*Store)(nil)
+	_ ratelimit.WindowGiver  = (*Store)(nil)
+)
 
 // cleanupInterval bounds how often the store sweeps expired entries, so the two
 // maps do not grow without bound across many distinct keys.
@@ -85,6 +89,43 @@ func (s *Store) IncrWindow(_ context.Context, key string, window time.Duration) 
 	}
 	w.count++
 	return w.count, nil
+}
+
+// PeekWindow implements ratelimit.WindowReader: the counter as it stands, without
+// moving it.
+//
+// An expired entry is reported as "no key" rather than as its last value: the
+// window it belonged to is over, and the next request starts a new one. The
+// sweep is left to the write path, so this answers from whatever the map holds
+// and gives the same answer IncrWindow would have acted on.
+func (s *Store) PeekWindow(_ context.Context, key string) (int64, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	w, ok := s.windows[key]
+	if !ok || !w.expires.After(time.Now()) {
+		return 0, false, nil
+	}
+	return w.count, true, nil
+}
+
+// GiveBackWindow implements ratelimit.WindowGiver: return one count to the
+// window, never below zero.
+//
+// An entry that has already expired is left alone rather than revived: the
+// window it counted belongs to a period that is over, and writing to it would
+// hand the next window a negative starting point. The next IncrWindow starts a
+// fresh entry anyway.
+func (s *Store) GiveBackWindow(_ context.Context, key string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	w, ok := s.windows[key]
+	if !ok || !w.expires.After(time.Now()) || w.count <= 0 {
+		return nil
+	}
+	w.count--
+	return nil
 }
 
 // cleanupLocked sweeps expired window entries and fully-refilled buckets. The
